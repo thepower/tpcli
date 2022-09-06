@@ -1,0 +1,21 @@
+{application, tp,
+ [{description, "An OTP application"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications,
+    [kernel,
+    gun,
+    tplib,
+    eevm,
+    tpapi2,
+    esha3,
+    getopt,
+    certifi,
+    stdlib
+    ]},
+  {env,[]},
+  {modules, []},
+
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.
