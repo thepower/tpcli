@@ -70,9 +70,9 @@ transform (<<"txext">>,V,A) when is_map(V) ->
                          _ ->
                            base64:decode(Code)
                        end,
-                 maps:put(code,Code2,TA);
+                 maps:put("code",Code2,TA);
                 (<<"vm">>,VmName,TA) ->
-                 maps:put(vm,binary_to_list(VmName),TA);
+                 maps:put("vm",binary_to_list(VmName),TA);
                 (TK,TV,TA) ->
                  maps:put(TK,TV,TA)
              end, #{},V)

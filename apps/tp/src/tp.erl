@@ -1,6 +1,6 @@
 -module(tp).
 
--export([main/1]).
+-export([main/1,get_config/0]).
 
 main([]) ->
     getopt:usage(option_spec_list(), escript:script_name());
@@ -28,7 +28,7 @@ main_run(Options, NonOpt) ->
                  ({keyfile,_Filename}) when Keys>1 -> true;
                  ({construct,_Filename}) -> true;
                  ({evmcall,_Filename}) -> true;
-                 ({save,_Filename}) -> true;
+                 ({savefilename,_Filename}) -> true;
                  ({address,_}) -> true;
                  ({getcode,_}) -> true;
                  ({mkmanifest,_}) -> true;
@@ -47,11 +47,15 @@ main_run(Options, NonOpt) ->
 
 
 option_spec_list() ->
+  Conf=tp:get_config(),
   [
    %% {Name,   ShortOpt,  LongOpt,       ArgSpec,               HelpMsg}
-   {host,       $h,        "host",       {string, "httpsi://localhost:49800/"},
+   {host,       $h,        "host",       {string,
+                                          proplists:get_value(host,Conf,"httpsi://localhost:49800/")},
     "tpnode's base address, use httpsi as protocol for ssl without cert verification"},
-   {keyfile,    $k,        "keyfile",    {string, "tpcli.key"}, "keyfile"},
+   {keyfile,    $k,        "keyfile",    {string,
+                                          proplists:get_value(keyfile,Conf,"tpcli.key")},
+    "keyfile"},
    {kgen,       undefined, "genkey",      undefined, "Export key"},
    {kexp,       undefined, "exportkey",   undefined, "Generate key"},
    {export_pw,  undefined, "exportpw",    string, "Password for export"},
@@ -71,8 +75,10 @@ option_spec_list() ->
    {savefilename, undefined, "save",        string, "Save tx to <filename> in binary format"},
    {showtx,     undefined, "showtx",      undefined, "Display tx"},
    {submit,     undefined, "submit",      undefined, "Send transaction"},
+   {{dry,true},     undefined, "dry",      undefined, "Do not actually sent transaction (for some operations)"},
    {mkmanifest, undefined, "mkmanifest", string, "Make manifest.json for specified directory"},
    {snewtask, undefined, "newstoragetask", undefined, "Create new storage task <address> <bucket name> <storage interval> <manifest file>"},
+   {stask,    undefined, "get_task", undefined, "Get task info <address> <task id>"},
    {snewprov, undefined, "newprovider", undefined, "Create new storage provider <address> <uploadURL> <baseURL>"}
    %{token,     undefined, undefined,     string, "ceremony token"}
   ].
@@ -105,7 +111,13 @@ run([snewprov], Opt) ->
              MyAddr,
              Priv,
              UplURL,
-             BaseURL
+             BaseURL,
+             case proplists:get_value(dry,Opt) of
+               true ->
+                 [dry];
+               _ ->
+                 []
+             end
             ) of
         {ok, R} ->
           io:format("Your provider ID is ~w~n",[R]);
@@ -153,10 +165,38 @@ run([snewtask], Opt) ->
              TBucket,
              Hash,
              Expire,
-             Size
+             Size,
+             case proplists:get_value(dry,Opt) of
+               true ->
+                 [dry];
+               _ ->
+                 []
+             end
             ) of
         {ok, R} ->
-          io:format("Your task ID is ~w~n",[R]);
+          io:format("Task ID: ~w~n~n",[R]),
+          {ok,#{uploader:=UplID,
+                name:=RBucket,
+                owner:=RAddr}}=tp_storage:get_task(
+                                 proplists:get_value(host,Opt),
+                                 Addr,
+                                 R,
+                                 []),
+          {ok,#{upload_url:=UURL,base_url:=BURL}}=tp_storage:get_prov(
+                                                    proplists:get_value(host,Opt),
+                                                    Addr,
+                                                    UplID,
+                                                    []),
+          io:format("Your content will be served at ~s/~s/~s/~n",
+                    [
+                     BURL,
+                     naddress:encode(binary:encode_unsigned(RAddr)),
+                     RBucket
+                    ]),
+          io:format("Upload base address ~s~n",[UURL]),
+          io:format("Example for manifest.json: ~s/~w/manifest.json~n",[UURL,R]),
+          ok;
+
         {error, Error} ->
           io:format("Error ~p~n",[Error])
       end;
@@ -169,8 +209,48 @@ run([snewtask], Opt) ->
 run([], _) ->
   done;
 
+run([stask], Opt) ->
+  case proplists:get_value(extra_arg,Opt) of
+    [TAddress,TTaskID] ->
+      Addr=naddress:decode(TAddress),
+      TaskID=list_to_integer(TTaskID),
+      {ok,#{uploader:=UplID,
+            name:=RBucket,
+            owner:=RAddr}=T}=tp_storage:get_task(
+                               proplists:get_value(host,Opt),
+                               Addr,
+                               TaskID,
+                               []),
+      {ok,#{upload_url:=UURL,base_url:=BURL}}=tp_storage:get_prov(
+                                                proplists:get_value(host,Opt),
+                                                Addr,
+                                                UplID,
+                                                []),
+      io:format("Owner: ~s~n",[naddress:encode(binary:encode_unsigned(RAddr))]),
+      io:format("Status: ~w~n",[maps:get(status,T)]),
+      io:format("Size: ~w~n",[maps:get(size,T)]),
+      io:format("Created: ~s~n",[calendar:system_time_to_rfc3339(maps:get(time,T))]),
+      io:format("Expire: ~s~n",[calendar:system_time_to_rfc3339(maps:get(expire,T))]),
+      io:format("Hash: ~s~n",[hex:encode(binary:encode_unsigned(maps:get(hash,T)))]),
+      io:format("Content will be served at ~s/~s/~s/~n",
+                [
+                 BURL,
+                 naddress:encode(binary:encode_unsigned(RAddr)),
+                 RBucket
+                ]),
+      io:format("Upload base address ~s~n",[UURL]),
+      io:format("Example for manifest.json: ~s/~w/manifest.json~n",[UURL,TaskID]),
+      ok;
+    Any  ->
+      io:format(standard_error, "Bad arguments: ~p~n",[Any])
+  end,
+  done;
+
 run([snewtask|Rest], Opt) ->
   io:format(standard_error, "newstoragetask incompatible with other actions",[]),
+  run(Rest, Opt);
+run([snewprov|Rest], Opt) ->
+  io:format(standard_error, "newprovider incompatible with other actions",[]),
   run(Rest, Opt);
 
 run([reg|Rest], Opt) ->
@@ -199,7 +279,7 @@ run([reg|Rest], Opt) ->
   end;
 
 run([example|Rest], Opt) ->
-  Deploy="H4sIAAAAAAAAA2WQXQuCMBSG7/0VY9eRZxb2AUFGEBEUEdFFSKxcJqkzFTXE/97ZpItyF9ue9zy8g9UGIbQQKZ0Sq6fuzyD2EKgnklC+qc7uqYxU5jgM2mWPGIzHE8bs1sjVeLs7tZSJFzIDDQl/h5KrzjMiIWfq84z2CD1scLcAXIzdtqUSlWqqtUhv0hOq9yGquZlHiZnlMuW+6GOgH0Ln8pVSXv5K1yDuSFd7+CfZw44EFTCwYADdEepTZ79eLpzjalH6s69Q6O8ReCA3RmN8AMJF1XZXAQAA",
+  Deploy="H4sIAMOhGWMCAyWOwQ6CMAyG7zzF0jMx22Jc4knOJnrw4IFwmK4iERgOYiCEd7fdemj7tX/+ds2EgB8GOAqdc/9pekcADofWLxBnr+A7nhWFkinUwRij9V7ppJh4fbneE434JVaxH+zSesuWJSFHCbUdIRdwO1PWUla0qJLNjDNbrVEKT++Qjd84n8bJB1vj7tH08Qi/HZ9CKsRbtmV/Sn7Kks0AAAA=",
   Tx="H4sIAAAAAAAAA22OMQ+CMBCFd35FczNDDyKim7OJDg4OxqGBgxChYIsGQ/jv9ihRBztc+r73kvfGQAh4koGtiEL+3yqdOwElaTJVBjMsTNsw3O1Q+pesUabpBjHxib7956frFS4+24fj2StLd6dRzqJTr7pVXHpxUogL9EZpW7hRoYDT3l28hotVKvuh0YdakxVEP3HHr753oIG7xzkJjS15SGfoSTk4Ns2pTNX1N1Q8dNZXreakHCT4FlCmtDySGcpIxhBiFHPVFEzBG7DjKIJJAQAA",
   EvmCall="H4sIAAAAAAAAA6vmUlBQSkxJKUotLlayUnJ0NDSAADNzQwMLCzNLC2MlHZCatNK85JLM/DwlKwWl9NSSgKL8ssyU1CKN0sy8EiNTM02IqsSidKAxCtFGsVy1XACpUKM9XAAAAA==",
   Save=fun(Bin,Filename) ->
@@ -498,3 +578,13 @@ parse_interval1([N,"sec"++_|Rest],Int) ->
                  ).
 
 
+get_config() ->
+  {ok, [[Home]]} = init:get_argument(home),
+  ConfDir = filename:join(Home, ".config/tp"),
+  Filename = filename:join(ConfDir, "cli.config"),
+  case file:consult(Filename) of
+    {ok, Config} ->
+      Config;
+    _ ->
+      []
+  end.

@@ -140,7 +140,7 @@ do_upgrade(Kind, Msg, Data) ->
 
 do_close(enter, _, Data) ->
   gun:close(Data#state.pid),
-  Timeout=max(100,min(Data#state.reconnect_timeout*Data#state.connect_try,300_000)),
+  Timeout=max(100,min(Data#state.reconnect_timeout*Data#state.connect_try,300000)),
   %logger:info("~s Closed, try ~w, wait ~w",[Data#state.name, Data#state.connect_try, Timeout]),
   erlang:send_after(Timeout, self(), connect),
   {keep_state, Data#state{pid=undefined}};
@@ -240,8 +240,8 @@ parse_args(#{name:=Name,address:=Addr,port:=Port,wsurl:=WsURL,handler:=M}=Args) 
      handler_module=M,
      handler_state=maps:get(state,Args,#{}),
      reconnect_timeout=maps:get(reconnect_timeout, Args, 500),
-     idle_timeout=maps:get(idle_timeout, Args, 300_000),
-     open_timeout=maps:get(open_timeout, Args, 5_000),
+     idle_timeout=maps:get(idle_timeout, Args, 300000),
+     open_timeout=maps:get(open_timeout, Args, 5000),
      connect_try=0
     }.
 

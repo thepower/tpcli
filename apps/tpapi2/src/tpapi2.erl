@@ -218,6 +218,7 @@ parse_url(Node) when is_list(Node) ->
                   #{ transport=>tls,
                      transport_opts => [{verify, verify_peer},
                                         {customize_hostname_check, CHC},
+                                        {depth, 5},
                                         {cacerts, CaCerts}
                                        ]
                    },
