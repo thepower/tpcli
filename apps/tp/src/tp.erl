@@ -19,6 +19,7 @@ main_run(Options, NonOpt) ->
   logger:info("Run as ~p~n",[Options]),
   Keys=lists:foldl(
          fun({keyfile,_},N) -> N+1;
+            ({rawkey,_},N) -> N+1;
             (_,N) -> N
          end,
          0,
@@ -26,6 +27,7 @@ main_run(Options, NonOpt) ->
   {Act,Opt}=lists:partition(
               fun(A) when is_atom(A) -> true;
                  ({keyfile,_Filename}) when Keys>1 -> true;
+                 ({rawkey,_}) when Keys>1 -> true;
                  ({construct,_Filename}) -> true;
                  ({evmcall,_Filename}) -> true;
                  ({savefilename,_Filename}) -> true;
@@ -53,11 +55,13 @@ option_spec_list() ->
    {host,       $h,        "host",       {string,
                                           proplists:get_value(host,Conf,"httpsi://localhost:49800/")},
     "tpnode's base address, use httpsi as protocol for ssl without cert verification"},
+   {rawkey,    undefined,  "hexkey",    string, "keyfile"},
    {keyfile,    $k,        "keyfile",    {string,
                                           proplists:get_value(keyfile,Conf,"tpcli.key")},
     "keyfile"},
-   {kgen,       undefined, "genkey",      undefined, "Export key"},
-   {kexp,       undefined, "exportkey",   undefined, "Generate key"},
+   {{ed25519,true}, undefined, "ed25519", undefined, "use ed25519 for keys generation"},
+   {kgen,       undefined, "genkey",      undefined, "Generate key"},
+   {kexp,       undefined, "exportkey",   undefined, "Export key"},
    {export_pw,  undefined, "exportpw",    string, "Password for export"},
    {ping,       undefined, "ping",        undefined, "ping node"},
    {sets,       undefined, "get_settings",undefined, "get chain settings"},
@@ -294,6 +298,9 @@ run([example|Rest], Opt) ->
   Save(EvmCall, "example_evmcall.json"),
   run(Rest, Opt);
 
+run([{rawkey,Hex}|Rest], Opt) ->
+  run(Rest, [{rawkey,Hex}|proplists:delete(rawkey,Opt)]);
+
 run([{keyfile,Filename}|Rest], Opt) ->
   case filelib:is_regular(Filename) of
     true ->
@@ -302,7 +309,7 @@ run([{keyfile,Filename}|Rest], Opt) ->
       io:format("bad keyfile ~s~n",[Filename]),
       throw('bad_keyfile')
   end,
-  run(Rest, [{keyfile,Filename}|proplists:delete(keyfile,Opt)]);
+  run(Rest, [{keyfile,Filename}|proplists:delete(rawkey,proplists:delete(keyfile,Opt))]);
 
 run([{getcode,Addr}|Rest], Opt) ->
   {ok,R}=tpapi2:code(proplists:get_value(host,Opt),naddress:decode(Addr)),
@@ -338,27 +345,38 @@ run([sign|Rest], Opt) ->
     true ->
       ok
   end,
-  File=proplists:get_value(keyfile, Opt),
-  Prev=readkey(File),
-  case proplists:get_value(address, Prev) =/= undefined of
-    true ->
-      TxA=maps:get(from,Tx),
-      MyA=naddress:decode(proplists:get_value(address, Prev)),
-      if(TxA =/= MyA) ->
-          io:format("Registered address mismatch tx's from ~s =/= ~s~n",
-                    [naddress:encode(MyA),naddress:encode(TxA)]);
-        true ->
-          ok
-      end
-  end,
-  case proplists:get_value(privkey, Prev) of
+
+  case proplists:get_value(rawkey, Opt) of
     undefined ->
-      throw('no_key');
-    TPriv ->
-      Priv=hex:decode(TPriv),
+      File=proplists:get_value(keyfile, Opt),
+      Prev=readkey(File),
+      case proplists:get_value(address, Prev) =/= undefined of
+        false ->
+          ok;
+        true ->
+          TxA=maps:get(from,Tx),
+          MyA=naddress:decode(proplists:get_value(address, Prev)),
+          if(TxA =/= MyA) ->
+              io:format("Registered address mismatch tx's from ~s =/= ~s~n",
+                        [naddress:encode(MyA),naddress:encode(TxA)]);
+            true ->
+              ok
+          end
+      end,
+      case proplists:get_value(privkey, Prev) of
+        undefined ->
+          throw('no_key');
+        TPriv ->
+          Priv=hex:decode(TPriv),
+          SignTx=tx:sign(Tx,Priv),
+          run(Rest, [{tx,SignTx}|proplists:delete(tx,Opt)])
+      end;
+    HexKey ->
+      Priv=hex:decode(HexKey),
       SignTx=tx:sign(Tx,Priv),
       run(Rest, [{tx,SignTx}|proplists:delete(tx,Opt)])
   end;
+
 
 run([{load,Filename}|Rest], Opt) ->
   {ok, Bin} = file:read_file(Filename),
@@ -486,7 +504,10 @@ run([kgen|Rest], Opt) ->
     _ ->
       throw('key_exists')
   end,
-  Priv=tpecdsa:generate_priv(),
+  Priv=case proplists:get_value(ed25519,Opt, false) of
+         false -> tpecdsa:generate_priv();
+         true -> tpecdsa:generate_priv(ed25519)
+       end,
   HexPriv=binary_to_list(hex:encode(Priv)),
   HexPub=binary_to_list(hex:encode(tpecdsa:calc_pub(Priv,true))),
   Keyfile=[{privkey,HexPriv},

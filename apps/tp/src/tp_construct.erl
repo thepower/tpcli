@@ -37,6 +37,29 @@ transform (<<"t">>,<<"NOW">>,A) ->
   maps:put(t,os:system_time(millisecond),A);
 transform (<<"t">>,V,_A) ->
   throw({'cant_decode_timestamp',V});
+transform (<<"patches">>, L, A) when is_list(L) ->
+  maps:put(patches,
+           lists:map(
+             fun(#{<<"p">>:=Path,
+                   <<"t">>:=Type,
+                   <<"v">>:=Value}) ->
+                 #{
+                   <<"p">> => lists:map(
+                                fun(<<"0x",Hex/binary>>) ->
+                                    hex:decode(Hex);
+                                   (Any) ->
+                                    Any
+                                end,
+                                Path),
+                   <<"t">> => Type,
+                   <<"v">> => case Value of
+                                <<"0x", Hex/binary>> ->
+                                  hex:decode(Hex);
+                                _ ->
+                                  Value
+                              end
+                  }
+             end, L), A);
 transform (<<"txext">>,V,A) when is_map(V) ->
   maps:put(txext,
            maps:fold(
