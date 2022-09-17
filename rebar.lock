@@ -5,8 +5,8 @@
   0},
  {<<"cowlib">>,{pkg,<<"cowlib">>,<<"2.7.3">>},1},
  {<<"eevm">>,
-  {git,"git@github.com:thepower/eevm.git",
-       {ref,"cd3c95982b2e9385aa6c2e40f26fd308c06bd600"}},
+  {git,"https://github.com/thepower/eevm.git",
+       {ref,"818036d1a7d113601e164132c00c21876ae333c1"}},
   0},
  {<<"esha3">>,
   {git,"https://github.com/cleverfox/esha3.git",
@@ -32,7 +32,7 @@
        {ref,"a0f026c803a66da925ae3cbb3198a1c5ca83162a"}},
   1},
  {<<"tplib">>,
-  {git,"git@github.com:thepower/tplib_erlang.git",
+  {git,"https://github.com/thepower/tplib_erlang.git",
        {ref,"bf280c5b0cf5fd9e9d96c6d60459c990358b4857"}},
   0}]}.
 [
