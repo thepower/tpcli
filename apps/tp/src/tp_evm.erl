@@ -1,9 +1,91 @@
 -module(tp_evm).
--export([q/4]).
+-export([q/4, q_raw/4, estimate_gas/4]).
 -export([local_deploy/3, local_run/4]).
 
-q(Node, Address, Function, Args) ->
-  Gas = 10000000,
+%%% tp_evm:local_deploy(<<159,255,224,0,0,0,0,1>>,hex:decode(Hex),#{})
+%%% tp_evm:local_run(<<159,255,224,0,0,0,0,1>>,<<"registerProvider(string,string)">>,[<<"url1">>,<<"url2">>],#{})
+estimate_gas(Node, Address, Value, ABI) ->
+  Gas = 1000000000,
+  {Host, Port, Opts,_} = tpapi2:parse_url(Node),
+  {ok, ConnPid} = gun:open(Host,Port,Opts),
+  {ok, _} = gun:await_up(ConnPid),
+  Get=fun(Endpoint) ->
+          StreamRef = gun:get(ConnPid, Endpoint, []),
+          {response, Fin, Code, _Headers} = gun:await(ConnPid, StreamRef),
+          Body=case Fin of
+                 fin -> <<>>;
+                 nofin ->
+                   {ok, Body2} = gun:await_body(ConnPid, StreamRef),
+                   Body2
+               end,
+          {Code, Body}
+      end,
+
+  {200, Bytecode} = Get(<<"/api/address/0x",(hex:encode(Address))/binary,"/code">>),
+
+  SLoad=fun(Addr, IKey, _Ex0) ->
+            {200,St1}=Get(<<"/api/address/0x",(hex:encode(binary:encode_unsigned(Addr)))/binary,
+                            "/state/0x",(hex:encode(binary:encode_unsigned(IKey)))/binary>>),
+            Res=binary:decode_unsigned(St1),
+            %io:format("=== Load key ~p:~p => ~p~n",[Addr,IKey,hex:encode(St1)]),
+            Res
+        end,
+
+  State0 = #{ sload=>SLoad,
+              gas=>Gas,
+              data=>#{
+                      address=>binary:decode_unsigned(Address),
+                      callvalue => Value,
+                      caller => 1024,
+                      origin => 1024
+                     },
+              cd=>ABI,
+              sha3=> fun esha3:keccak_256/1,
+              embedded_code => #{
+                                 16#AFFFFFFFFF000000 => fun(_) ->
+                                                            {1,<<0:256/big,1:256/big>>}
+                                                        end
+                                },
+              get => #{
+                       code => fun(Addr,_) ->
+                                   io:format("Get code for address ~p~n",[
+                                                                          naddress:encode(
+                                                                            binary:encode_unsigned(Addr)
+                                                                           )
+                                                   ]),
+                                   throw('unsupported')
+                               end
+                      }
+            },
+  Res=try
+        eevm:eval(Bytecode,#{},State0)
+      catch Ec:Ee:Stack ->
+              {error, iolist_to_binary(io_lib:format("~p:~p@~p",[Ec,Ee,hd(Stack)]))}
+      end,
+  gun:close(ConnPid),
+  case Res of
+    {done, {return, Data}, #{gas:=GL}} ->
+      {ok, {return, Data}, Gas-GL};
+    {done, 'stop', #{gas:=GL}} ->
+      {ok, stop, Gas-GL};
+    {done, 'eof', #{gas:=GL}} ->
+      {ok, eof, Gas-GL};
+    {done, 'invalid', #{gas:=GL}} ->
+      {ok, invalid, Gas-GL};
+    {done, {revert, Data}, #{gas:=GL}} ->
+      {ok, {revert, Data}, Gas-GL};
+    {error, Desc} ->
+      {error, Desc, 0};
+    {error, nogas, #{gas:=GL}} ->
+      {error, nogas, Gas-GL};
+    {error, {jump_to,_}, #{gas:=GL}} ->
+      {error, bad_jump, Gas-GL};
+    {error, {bad_instruction,I}, #{gas:=GL}} ->
+      {error, {bad_instruction,I}, Gas-GL}
+  end.
+
+q_raw(Node, Address, Function, Args) ->
+  Gas = 1000000000,
   {Host, Port, Opts,_} = tpapi2:parse_url(Node),
   {ok, ConnPid} = gun:open(Host,Port,Opts),
   {ok, _} = gun:await_up(ConnPid),
@@ -38,7 +120,6 @@ q(Node, Address, Function, Args) ->
                      }
             },
 
-
   BArgs=tpapi2:evm_encode(
           lists:map(
             fun(<<"0x",Hex/binary>>) ->
@@ -49,6 +130,7 @@ q(Node, Address, Function, Args) ->
                 Other
             end,Args)
          ),
+
   IFun = fun(<<"0x",Hex:8/binary>>) ->
              B=hex:decode(Hex),
              binary:decode_unsigned(B);
@@ -63,10 +145,14 @@ q(Node, Address, Function, Args) ->
       catch Ec:Ee:Stack ->
               {error, iolist_to_binary(io_lib:format("~p:~p@~p",[Ec,Ee,hd(Stack)]))}
       end,
+  gun:close(ConnPid),
+  Res.
+
+q(Node, Address, Function, Args) ->
   FmtStack=fun(St) ->
                [<<"0x",(hex:encode(binary:encode_unsigned(X)))/binary>> || X<-St]
            end,
-  gun:close(ConnPid),
+  Res=q_raw(Node, Address, Function, Args),
   case Res of
     {done, {return,RetVal}, #{stack:=St}} ->
       {return, RetVal, FmtStack(St)};

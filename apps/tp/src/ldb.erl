@@ -36,7 +36,7 @@ parsef(Bin) ->
 
 put(Address, code, Code) ->
   BA=naddress:encode(Address),
-  Filename=list_to_binary([BA,"_storage.txt"]),
+  Filename=list_to_binary([BA,"_code.bin"]),
   file:write_file(Filename, Code);
 
 put(Address, storage, KeyVal) ->

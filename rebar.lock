@@ -32,7 +32,7 @@
        {ref,"a0f026c803a66da925ae3cbb3198a1c5ca83162a"}},
   1},
  {<<"tplib">>,
-  {git,"git@github.com:thepower/tplib_erlang.git",
+  {git,"https://github.com/thepower/tplib_erlang.git",
        {ref,"bf280c5b0cf5fd9e9d96c6d60459c990358b4857"}},
   0}]}.
 [

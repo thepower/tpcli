@@ -8,7 +8,12 @@
          settings/1,
          ledger/2,
          get_seq/2,
-         code/2
+         code/2,
+         match_cur/2
+        ]).
+-export([
+         gas_price/2,
+         fee_price/2
         ]).
 
 connect(Node) ->
@@ -207,10 +212,19 @@ parse_url(Node) when is_list(Node) ->
     host:=Host}=P = uri_string:parse(Node),
   {Opts,Port}=case Sch of
                 "httpsi" ->
-                  logger:notice("-=-=-= [ connection is insecure ] =-=-=-~n",[]),
+                  case get(warned) of
+                    undefined ->
+                      logger:notice("-=-=-= [ connection is insecure ] =-=-=-~n",[]),
+                      put(warned, true);
+                    _ ->
+                      ok
+                  end,
                   {
                    #{ transport=>tls,
-                     transport_opts => []
+                     transport_opts => [
+                                        {versions,['tlsv1.2']},
+                                        {verify,verify_none}
+                                       ]
                    },
                   maps:get(port,P,443)
                  };
@@ -219,13 +233,21 @@ parse_url(Node) when is_list(Node) ->
                      transport_opts => [{verify, verify_peer},
                                         {customize_hostname_check, CHC},
                                         {depth, 5},
+                                        {versions,['tlsv1.2']},
+                                        %{versions,['tlsv1.3']},
                                         {cacerts, CaCerts}
                                        ]
                    },
                   maps:get(port,P,443)
                  };
                 "http" ->
-                  logger:notice("-=-=-= [ connection is not encrypted, so insecure ] =-=-=-~n",[]),
+                  case get(warned) of
+                    undefined ->
+                      logger:notice("-=-=-= [ connection is not encrypted, so insecure ] =-=-=-~n",[]),
+                      put(warned, true);
+                    _ ->
+                      ok
+                  end,
                   {
                    #{ transport=>tcp },
                    maps:get(port,P,80)
@@ -274,4 +296,50 @@ evm_encode(Elements) ->
   HdLen=size(H),
   <<H/binary,B/binary>>.
 
+fee_price(Bytes,Host) ->
+  {ok,R}=tpapi2:settings(Host),
+  Root=maps:get(<<"fee">>,maps:get(<<"current">>,R,#{}),#{}),
+  case maps:is_key(<<"params">>, Root) of
+    false ->
+      #{};
+    true ->
+      maps:fold(
+        fun(Cur,#{<<"base">>:=Base,<<"kb">>:=KB}=Rate,A) ->
+            BaseEx=maps:get(<<"baseextra">>, Rate, 0),
+            BodySize=Bytes-32,
+            ExtCur=max(0, BodySize-BaseEx),
+            maps:put(Cur,Base+trunc(ExtCur*KB/1024),A);
+           (_,_,A) ->
+            A
+        end,
+        #{},
+        Root)
+  end.
+
+gas_price(N,Host) ->
+  {ok,R}=tpapi2:settings(Host),
+  Gas0=maps:get(<<"gas">>,maps:get(<<"current">>,R,#{}),#{}),
+  maps:map(
+    fun(_,V) ->
+        ceil(N/V)
+    end, Gas0).
+
+match_cur(FeePrice, Amounts) ->
+  case maps:size(FeePrice) == 0 of
+    true ->
+      undefined;
+    false ->
+      {DC,DAm}=hd(maps:to_list(FeePrice)),
+      maps:fold(
+        fun(Cur,Amount,Acc) ->
+            CAm=maps:get(Cur,Amounts,0),
+            if CAm>=Amount ->
+                 {Amount, Cur};
+               true ->
+                 Acc
+            end
+        end, 
+        {DAm, DC},
+        FeePrice)
+  end.
 
