@@ -1,5 +1,7 @@
 -module(tp_storage).
--export([find_my_task_id/5, new_task/9, new_prov/7, get_task/4, get_prov/4]).
+-export([find_my_task_id/5, get_task/4, get_prov/4]).
+-export([new_task/8]).
+-export([new_prov/6]).
 
 get_task(Node, Addr, TaskID, _Opts) ->
   case tp_evm:q(Node , Addr, <<"getTask(uint256)">>, [TaskID]) of
@@ -24,10 +26,7 @@ get_prov(Node, Addr, ProvID, _Opts) ->
       {error, Other}
   end.
 
-
-
-new_prov(Node, Addr, MyAddr, Priv, UploadURL, BaseURL, Opts) ->
-  {ok,Seq}=tpapi2:get_seq(Node, MyAddr),
+new_prov(Addr, MyAddr, Seq, UploadURL, BaseURL, PayloadFun) ->
   ABI=[
        <<16#74ca8971:32/big>>, %add_prov
        tp_abi:encode_simple([
@@ -35,159 +34,92 @@ new_prov(Node, Addr, MyAddr, Priv, UploadURL, BaseURL, Opts) ->
                              list_to_binary([BaseURL])
                             ])],
 
-  Tx=tx:sign(
-       tx:construct_tx(
-         #{kind=>generic,
-           t => os:system_time(millisecond),
-           seq => Seq+1,
-           from => MyAddr,
-           to => Addr,
-           payload => [
-                       #{purpose=>gas, amount=>15000, cur=><<"FTT">>}
-                      ],
-           call => #{
-                     args=>[iolist_to_binary(ABI)],
-                     function=>"0x0"
-                    },
-           ver=>2
-          }
-        ),
-       Priv),
-  case lists:member(dry, Opts) of
-    true ->
-      case find_my_prov(
-             Node,
-             Addr,
-             MyAddr) of
-        {ok, ID} ->
-          {ok, ID};
-        {error, Error} ->
-          io:format("Something went wrong, error ~p~n",[Error]),
-          {error, Error}
-      end;
-    false ->
-      case tpapi2:submit_tx(Node ,Tx) of
-        {ok,#{<<"ok">>:=true,
-              <<"block">> := _BlkID}} ->
-          case find_my_prov(
-                 Node,
-                 Addr,
-                 MyAddr) of
-            {ok, ID} ->
-              {ok, ID};
-            {error, Error} ->
-              io:format("Something went wrong, error ~p~n",[Error]),
-              {error, Error}
-          end;
-        {ok, #{}=R} ->
-          logger:notice("Error ~p",[R]),
-          {error, block_not_found};
-        {error, E} ->
-          {error, E}
-      end
-  end.
+  TxTpl=#{kind=>generic,
+       t => os:system_time(millisecond),
+       seq => Seq+1,
+       from => MyAddr,
+       to => Addr,
+       payload => [#{purpose=>gas, amount=>17000, cur=><<"CUR1">>},
+                   #{purpose=>srcfee, amount=>17000, cur=><<"CUR1">>}
+                  ],
+       call => #{
+                 args=>[iolist_to_binary(ABI)],
+                 function=>"0x0"
+                },
+       ver=>2
+      },
+
+  Size=size(maps:get(body,tx:construct_tx(TxTpl))),
+
+  P=PayloadFun(2000000,Size),
+  Tx=tx:construct_tx(TxTpl#{payload => P}),
+  Tx.
 
 
-
-new_task(Node, Addr, MyAddr, Priv, TBucket, Hash, Expire, Size, Opts) ->
-  {ok,Seq}=tpapi2:get_seq(Node, MyAddr),
+new_task(Addr, MyAddr, Seq, TBucket, Hash, Expire, Size, PayloadFun) ->
   ABI=[
        <<16#cc839f9d:32/big>>,
        %<<16#74ca8971:32/big>>, add_prov
+       %registerProvider(
        tp_abi:encode_simple([
                              list_to_binary([TBucket]),
                              binary:decode_unsigned(Hash),
                              Expire,
                              Size
                             ])],
+  TxTpl=#{kind=>generic,
+          t => os:system_time(millisecond),
+          seq => Seq+1,
+          from => MyAddr,
+          to => Addr,
+          payload => [#{purpose=>gas, amount=>17000, cur=><<"CUR1">>},
+                      #{purpose=>srcfee, amount=>17000, cur=><<"CUR1">>},
+                      #{purpose=>transfer, amount=>17000, cur=><<"CUR1">>}
+                     ],
+          call => #{
+                    args=>[iolist_to_binary(ABI)],
+                    function=>"0x0"
+                   },
+          ver=>2
+         },
 
-  Tx=tx:sign(
-       tx:construct_tx(
-         #{kind=>generic,
-           t => os:system_time(millisecond),
-           seq => Seq+1,
-           from => MyAddr,
-           to => Addr,
-           payload => [
-                       #{purpose=>gas, amount=>15000, cur=><<"FTT">>}
-                      ],
-           call => #{
-                     args=>[iolist_to_binary(ABI)],
-                     function=>"0x0"
-                    },
-           ver=>2
-          }
-        ),
-       Priv),
-  case lists:member(dry, Opts) of
-    true ->
-      case tp_storage:find_my_task_id(
-             Node,
-             Addr,
-             MyAddr,
-             list_to_binary(TBucket),
-             Hash) of
-        {ok, ID} ->
-          {ok, ID};
-        {error, Error} ->
-          io:format("Something went wrong, error ~p~n",[Error]),
-          {error, Error}
-      end;
-    false ->
-      case tpapi2:submit_tx(Node ,Tx) of
-        {ok,#{<<"ok">>:=true,
-              <<"block">> := _BlkID}} ->
-          case tp_storage:find_my_task_id(
-                 Node,
-                 Addr,
-                 MyAddr,
-                 list_to_binary(TBucket),
-                 Hash) of
-            {ok, ID} ->
-              {ok, ID};
-            {error, Error} ->
-              io:format("Something went wrong, error ~p~n",[Error]),
-              {error, Error}
-          end;
-        {ok, #{}=R} ->
-          logger:notice("Error ~p",[R]),
-          {error, block_not_found};
-        {error, E} ->
-          {error, E}
-      end
-  end.
+  PreTX=tx:construct_tx(TxTpl),
+  TxSize=size(maps:get(body,PreTX)),
+  P=PayloadFun(2000000,TxSize),
 
+  Tx=tx:construct_tx(TxTpl#{ payload => P }),
+  Tx.
 
-find_my_prov(Node, Addr, MyAddr) ->
-  Max=case tp_evm:q(Node , Addr, <<"storageNodesCount()">>, []) of
-        {return, <<Number:256/big>>, _} ->
-          Number
-      end,
-  check_prov(Node, Max, Addr, binary:decode_unsigned(MyAddr), 5).
-
-check_prov(_, _, _, _, 0) ->
-  {error, not_found};
-check_prov(_, 0, _, _, _) ->
-  {error, not_found};
-
-check_prov(Node, TaskID, Addr, MyAddr, Left) ->
-  case tp_evm:q(Node , Addr, <<"getProvider(uint256)">>, [TaskID]) of
-    {return, Bin, _} ->
-      Outs=[{owner,address}, {base_url,string}, {upload_url,string}],
-      #{owner:=Owner}=_Dec=tp_abi:decode_abi_map(Bin, Outs),
-      if Owner==MyAddr ->
-           {ok, TaskID};
-         true ->
-           check_prov(Node, TaskID-1, Addr, MyAddr, Left-1)
-      end;
-    Other ->
-      logger:error("Can't decode getProvider(uint256) call result ~p",[Other])
-  end.
-
-
-
-
-
+%find_my_prov(Node, Addr, MyAddr) ->
+%  Max=case tp_evm:q(Node , Addr, <<"storageNodesCount()">>, []) of
+%        {return, <<Number:256/big>>, _} ->
+%          Number
+%      end,
+%  check_prov(Node, Max, Addr, binary:decode_unsigned(MyAddr), 5).
+%
+%check_prov(_, _, _, _, 0) ->
+%  {error, not_found};
+%check_prov(_, 0, _, _, _) ->
+%  {error, not_found};
+%
+%check_prov(Node, TaskID, Addr, MyAddr, Left) ->
+%  case tp_evm:q(Node , Addr, <<"getProvider(uint256)">>, [TaskID]) of
+%    {return, Bin, _} ->
+%      Outs=[{owner,address}, {base_url,string}, {upload_url,string}],
+%      #{owner:=Owner}=_Dec=tp_abi:decode_abi_map(Bin, Outs),
+%      if Owner==MyAddr ->
+%           {ok, TaskID};
+%         true ->
+%           check_prov(Node, TaskID-1, Addr, MyAddr, Left-1)
+%      end;
+%    Other ->
+%      logger:error("Can't decode getProvider(uint256) call result ~p",[Other])
+%  end.
+%
+%
+%
+%
+%
 find_my_task_id(Node, Addr, MyAddr, MyBucket, MyHash) ->
   Max=case tp_evm:q(Node , Addr, <<"storageTasksCount()">>, []) of
         {return, <<NumberOfTasks:256/big>>, _} ->
