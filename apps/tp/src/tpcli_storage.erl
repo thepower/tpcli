@@ -16,6 +16,7 @@ main_run(Options, NonOpt) ->
                  ({keyfile,_Filename}) when Keys>1 -> true;
                  ({rawkey,_}) when Keys>1 -> true;
                  ({baseurl,_}) -> true;
+                 ({stask,_}) -> true;
                  ({bucketname,_}) -> true;
                  ({mkmanifest,_}) -> true;
                  (_) -> false
@@ -33,11 +34,14 @@ main_run(Options, NonOpt) ->
 run([], _) ->
   done;
 
-run([stask], Opt) ->
-  case proplists:get_value(extra_arg,Opt) of
-    [TAddress,TTaskID] ->
-      Addr=naddress:decode(TAddress),
-      TaskID=list_to_integer(TTaskID),
+run([{stask,TaskID}|Rest], Opt) ->
+  Addr=case proplists:get_value(address,Opt) of
+         undefined ->
+           throw('address_required');
+         A ->
+           naddress:decode(A)
+       end,
+
       {ok,#{uploader:=UplID,
             name:=RBucket,
             owner:=RAddr}=T}=tp_storage:get_task(
@@ -64,11 +68,7 @@ run([stask], Opt) ->
                 ]),
       io:format("Upload base address ~s~n",[UURL]),
       io:format("Example for manifest.json: ~s/~w/manifest.json~n",[UURL,TaskID]),
-      ok;
-    Any  ->
-      io:format(standard_error, "Bad arguments: ~p~n",[Any])
-  end,
-  done;
+  run(Rest, Opt);
 
 run([{bucketname,TBucket}|Rest], Opt) ->
   Addr=case proplists:get_value(address,Opt) of

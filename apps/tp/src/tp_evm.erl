@@ -1,10 +1,13 @@
 -module(tp_evm).
--export([q/4, q_raw/4, estimate_gas/4]).
+-export([q/4, q_raw/4, estimate_gas/5, estimate_gas/4]).
 -export([local_deploy/3, local_run/4]).
 
 %%% tp_evm:local_deploy(<<159,255,224,0,0,0,0,1>>,hex:decode(Hex),#{})
 %%% tp_evm:local_run(<<159,255,224,0,0,0,0,1>>,<<"registerProvider(string,string)">>,[<<"url1">>,<<"url2">>],#{})
 estimate_gas(Node, Address, Value, ABI) ->
+  estimate_gas(Node, Address, Value, ABI, undefined).
+
+estimate_gas(Node, Address, Value, ABI, BCode) ->
   Gas = 1000000000,
   {Host, Port, Opts,_} = tpapi2:parse_url(Node),
   {ok, ConnPid} = gun:open(Host,Port,Opts),
@@ -21,7 +24,12 @@ estimate_gas(Node, Address, Value, ABI) ->
           {Code, Body}
       end,
 
-  {200, Bytecode} = Get(<<"/api/address/0x",(hex:encode(Address))/binary,"/code">>),
+  Bytecode = if is_binary(BCode) ->
+                  BCode;
+                true ->
+                  {200, GotBytecode} = Get(<<"/api/address/0x",(hex:encode(Address))/binary,"/code">>),
+                  GotBytecode
+             end,
 
   SLoad=fun(Addr, IKey, _Ex0) ->
             {200,St1}=Get(<<"/api/address/0x",(hex:encode(binary:encode_unsigned(Addr)))/binary,

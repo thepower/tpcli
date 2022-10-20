@@ -153,6 +153,94 @@ run([{savefilename,Filename}|Rest], Opt) ->
   io:format("Tx written to file ~s~n",[Filename]),
   run(Rest, Opt);
 
+run([estimate|Rest], Opt) ->
+  Tx=proplists:get_value(tx,Opt),
+  if(Tx==undefined) ->
+      throw('no_tx_for_estimate');
+    true ->
+      Node=proplists:get_value(host,Opt),
+      GasNeed=case Tx of
+                #{kind:=deploy,
+                  txext := #{"code" := Code,"vm":="evm"},
+                  from:=ContractAddr } ->
+                  case tp_evm:estimate_gas(Node,ContractAddr,0,<<>>,Code) of
+                    {ok, {return,_Res}, Gas} ->
+                      io:format("evm returned ~p bytes~n",[size(_Res)]),
+                      Gas;
+                    {ok, _Res, Gas} ->
+                      io:format("evm ret: ~p~n",[_Res]),
+                      Gas;
+                    Any ->
+                      io:format("Estimate gas error: ~p~n",[Any]),
+                      0
+                  end;
+
+                #{call:=#{
+                          function := "0x0",
+                          args := [ABI]
+                         },
+                  to:=ContractAddr } ->
+                  case tp_evm:estimate_gas(Node,ContractAddr,0,ABI) of
+                    {ok, _Res, Gas} ->
+                      io:format("evm ret: ~p~n",[_Res]),
+                      Gas;
+                    _ ->
+                      io:format("Estimate gas error~n"),
+                      0
+                  end;
+
+                #{call:=#{
+                          function := SFunc,
+                          args := Args
+                         },
+                  to:=ContractAddr } ->
+                  Func=list_to_binary(SFunc),
+                  IFun = fun(<<"0x",Hex:8/binary>>) ->
+                             B=hex:decode(Hex),
+                             binary:decode_unsigned(B);
+                            (B) when is_binary(B) ->
+                             <<X:32/big,_/binary>> = esha3:keccak_256(B),
+                             X
+                         end(Func),
+                  BArgs=tpapi2:evm_encode(
+                          lists:map(
+                            fun(<<"0x",Hex/binary>>) ->
+                                {bin, hex:decode(Hex)};
+                               (Int) when is_integer(Int) ->
+                                Int;
+                               (Other) when is_binary(Other) ->
+                                Other
+                            end,Args)
+                         ),
+                  ABI  = << IFun:32/big, BArgs/binary>>,
+
+                  case tp_evm:estimate_gas(Node,ContractAddr,0,ABI) of
+                    {ok, _Res, Gas} ->
+                      io:format("evm ret: ~p~n",[_Res]),
+                      Gas;
+                    _ ->
+                      io:format("Estimate gas error~n"),
+                      0
+                  end;
+                _ ->
+                  0
+              end,
+      io:format("Gas need ~w~n",[GasNeed]),
+      GasPrice=tpapi2:gas_price(GasNeed,Node),
+      io:format("GasEstimate: ~p~n",[GasPrice]),
+      io:format("GasEstimate/10^9: ~p~n",[maps:map(fun(_,V) -> V/1.0e9 end, GasPrice)]),
+      TxSize=size(maps:get(body,Tx)),
+      FeePrice=tpapi2:fee_price(TxSize,Node),
+      io:format("Tx size ~w~n",[TxSize]),
+      io:format("FeeEstimate: ~p~n",[FeePrice]),
+      io:format("FeeEstimate/10^9: ~p~n",[maps:map(fun(_,V) -> V/1.0e9 end, FeePrice)]),
+
+
+      ok
+  end,
+  run(Rest, Opt);
+
+
 run([showtx|Rest], Opt) ->
   Tx=proplists:get_value(tx,Opt),
   if(Tx==undefined) ->
@@ -166,7 +254,29 @@ run([showtx|Rest], Opt) ->
 run([{construct,Filename}|Rest], Opt) ->
   {ok,Bin} = file:read_file(Filename),
   JTX=jsx:decode(Bin,[return_maps]),
-  JSON=tp_construct:construct(JTX),
+  JSON=case JTX of
+         #{ <<"seq">>:= <<"auto">> } ->
+           Node=proplists:get_value(host,Opt),
+           File=proplists:get_value(keyfile, Opt),
+           Prev=readkey(File),
+           Seq  = case proplists:get_value(address, Prev) of
+                  undefined ->
+                    #{};
+                  Adr ->
+                    MyAddr=naddress:decode(Adr),
+                    case tpapi2:get_seq(Node, MyAddr) of
+                      {ok,S} -> S;
+                      Err ->
+                        logger:notice("Can't get ledger for address ~s: ~p",[naddress:encode(MyAddr), Err]),
+                        0
+                    end
+                end,
+
+           io:format("Autoseq ~w~n",[Seq]),
+           tp_construct:construct(JTX#{<<"seq">>=>Seq});
+         _ ->
+           tp_construct:construct(JTX)
+       end,
   Tx=tx:construct_tx(JSON),
 
   run(Rest, [{tx,Tx}|Opt]);

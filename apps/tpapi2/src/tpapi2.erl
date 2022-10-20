@@ -42,7 +42,7 @@ do_get(ConnPid, Endpoint) ->
   end.
 
 submit_tx(Node, Tx) ->
-  {ok, ConnPid} = connect(Node), 
+  {ok, ConnPid} = connect(Node),
   Post=fun(Endpoint, Bin) ->
            StreamRef = gun:post(ConnPid, Endpoint, [], Bin, #{}),
            {response, Fin, Code, _Headers} = gun:await(ConnPid, StreamRef),
@@ -109,7 +109,7 @@ wait_tx(ConnPid, TxID, Timeout) ->
   end.
 
 code(Node, Addr) ->
-  {ok, ConnPid} = connect(Node), 
+  {ok, ConnPid} = connect(Node),
   {Code, Body} = do_get(ConnPid,"/api/address/0x"++binary_to_list(hex:encode(Addr))++"/code"),
   gun:close(ConnPid),
   if Code==200 ->
@@ -119,7 +119,7 @@ code(Node, Addr) ->
   end.
 
 get_seq(Node, Addr) ->
-  {ok, ConnPid} = connect(Node), 
+  {ok, ConnPid} = connect(Node),
   {Code, Body} = do_get(ConnPid,"/api/address/0x"++binary_to_list(hex:encode(Addr))++".mp?bin=raw"),
   gun:close(ConnPid),
   if Code==200 ->
@@ -139,7 +139,7 @@ get_seq(Node, Addr) ->
 
 
 ledger(Node, Addr) ->
-  {ok, ConnPid} = connect(Node), 
+  {ok, ConnPid} = connect(Node),
   {Code, Body} = do_get(ConnPid,"/api/address/0x"++binary_to_list(hex:encode(Addr))++".mp?bin=raw"),
   gun:close(ConnPid),
   if Code==200 ->
@@ -157,7 +157,7 @@ ledger(Node, Addr) ->
 
 
 settings(Node) ->
-  {ok, ConnPid} = connect(Node), 
+  {ok, ConnPid} = connect(Node),
   {Code, Body} = do_get(ConnPid,"/api/settings.mp"),
   gun:close(ConnPid),
   if Code==200 ->
@@ -173,7 +173,7 @@ settings(Node) ->
   end.
 
 ping(Node) ->
-  {ok, ConnPid} = connect(Node), 
+  {ok, ConnPid} = connect(Node),
   {Code, Body} = do_get(ConnPid,"/api/status"),
   gun:close(ConnPid),
   if Code==200 ->
@@ -317,10 +317,17 @@ fee_price(Bytes,Host) ->
   end.
 
 gas_price(N,Host) ->
+
   {ok,R}=tpapi2:settings(Host),
   Gas0=maps:get(<<"gas">>,maps:get(<<"current">>,R,#{}),#{}),
   maps:map(
-    fun(_,V) ->
+    fun(_,V0) ->
+        V=case V0 of
+            #{<<"gas">> := Nom,<<"tokens">> := Den} ->
+              Nom/Den;
+            Nom when is_integer(Nom) ->
+              Nom
+          end,
         ceil(N/V)
     end, Gas0).
 
@@ -338,7 +345,7 @@ match_cur(FeePrice, Amounts) ->
                true ->
                  Acc
             end
-        end, 
+        end,
         {DAm, DC},
         FeePrice)
   end.
