@@ -1,7 +1,7 @@
 -module(tpcli_main).
 
 -export([main_run/2,run/2]).
--export([sign/1,submit/1]).
+-export([sign/1,submit/1,estimate/1]).
 -include_lib("public_key/include/public_key.hrl").
 
 main_run(Options, NonOpt) ->
@@ -67,7 +67,8 @@ run([reg|Rest], Opt) ->
                                         Priv
                                        ),
       io:format("Registered address is ~s~n",[TAddr]),
-      Keyfile=[{address,binary_to_list(TAddr)}|Prev],
+      Keyfile=[{address,binary_to_list(TAddr)},
+               {node,proplists:get_value(host,Opt)}|Prev],
       writefile(File, Keyfile),
       run(Rest, Opt)
   end;
@@ -76,6 +77,7 @@ run([example|Rest], Opt) ->
   Deploy="H4sIAMOhGWMCAyWOwQ6CMAyG7zzF0jMx22Jc4knOJnrw4IFwmK4iERgOYiCEd7fdemj7tX/+ds2EgB8GOAqdc/9pekcADofWLxBnr+A7nhWFkinUwRij9V7ppJh4fbneE434JVaxH+zSesuWJSFHCbUdIRdwO1PWUla0qJLNjDNbrVEKT++Qjd84n8bJB1vj7tH08Qi/HZ9CKsRbtmV/Sn7Kks0AAAA=",
   Tx="H4sIAAAAAAAAA22OMQ+CMBCFd35FczNDDyKim7OJDg4OxqGBgxChYIsGQ/jv9ihRBztc+r73kvfGQAh4koGtiEL+3yqdOwElaTJVBjMsTNsw3O1Q+pesUabpBjHxib7956frFS4+24fj2StLd6dRzqJTr7pVXHpxUogL9EZpW7hRoYDT3l28hotVKvuh0YdakxVEP3HHr753oIG7xzkJjS15SGfoSTk4Ns2pTNX1N1Q8dNZXreakHCT4FlCmtDySGcpIxhBiFHPVFEzBG7DjKIJJAQAA",
   EvmCall="H4sIAAAAAAAAA6vmUlBQSkxJKUotLlayUnJ0NDSAADNzQwMLCzNLC2MlHZCatNK85JLM/DwlKwWl9NSSgKL8ssyU1CKN0sy8EiNTM02IqsSidKAxCtFGsVy1XACpUKM9XAAAAA==",
+  LStore="H4sIAAAAAAAAA63PQQ+CIBwF8Lufgv3PHACbWTdvnerYoblmQdOFYsCs5vzugZSnNi9yeu/Bfht9hBB0QsMWMezzvWq4KyCNVVrAuN20qv2WZZSEk6wpSdNkk8bhhfXX+8MxNCMek9cWb6kKT57y72CvpTB+cBWhHlqfQYpOSAo4BOZCKaRUkOORd6gFFzsXd/4Co6fSksOAZ5hL1VAWr/5B5EUoYSSeR2Rl7CT4ci44/zGVFTVdwGALGO4vjsijIfoA/W50ENsBAAA=",
   Save=fun(Bin,Filename) ->
            file:write_file(Filename,
                            zlib:gunzip(
@@ -85,6 +87,7 @@ run([example|Rest], Opt) ->
 
   Save(Deploy, "example_deploy.json"),
   Save(Tx, "example_generic.json"),
+  Save(LStore, "example_lstore.json"),
   Save(EvmCall, "example_evmcall.json"),
   run(Rest, Opt);
 
@@ -154,90 +157,7 @@ run([{savefilename,Filename}|Rest], Opt) ->
   run(Rest, Opt);
 
 run([estimate|Rest], Opt) ->
-  Tx=proplists:get_value(tx,Opt),
-  if(Tx==undefined) ->
-      throw('no_tx_for_estimate');
-    true ->
-      Node=proplists:get_value(host,Opt),
-      GasNeed=case Tx of
-                #{kind:=deploy,
-                  txext := #{"code" := Code,"vm":="evm"},
-                  from:=ContractAddr } ->
-                  case tp_evm:estimate_gas(Node,ContractAddr,0,<<>>,Code) of
-                    {ok, {return,_Res}, Gas} ->
-                      io:format("evm returned ~p bytes~n",[size(_Res)]),
-                      Gas;
-                    {ok, _Res, Gas} ->
-                      io:format("evm ret: ~p~n",[_Res]),
-                      Gas;
-                    Any ->
-                      io:format("Estimate gas error: ~p~n",[Any]),
-                      0
-                  end;
-
-                #{call:=#{
-                          function := "0x0",
-                          args := [ABI]
-                         },
-                  to:=ContractAddr } ->
-                  case tp_evm:estimate_gas(Node,ContractAddr,0,ABI) of
-                    {ok, _Res, Gas} ->
-                      io:format("evm ret: ~p~n",[_Res]),
-                      Gas;
-                    _ ->
-                      io:format("Estimate gas error~n"),
-                      0
-                  end;
-
-                #{call:=#{
-                          function := SFunc,
-                          args := Args
-                         },
-                  to:=ContractAddr } ->
-                  Func=list_to_binary(SFunc),
-                  IFun = fun(<<"0x",Hex:8/binary>>) ->
-                             B=hex:decode(Hex),
-                             binary:decode_unsigned(B);
-                            (B) when is_binary(B) ->
-                             <<X:32/big,_/binary>> = esha3:keccak_256(B),
-                             X
-                         end(Func),
-                  BArgs=tpapi2:evm_encode(
-                          lists:map(
-                            fun(<<"0x",Hex/binary>>) ->
-                                {bin, hex:decode(Hex)};
-                               (Int) when is_integer(Int) ->
-                                Int;
-                               (Other) when is_binary(Other) ->
-                                Other
-                            end,Args)
-                         ),
-                  ABI  = << IFun:32/big, BArgs/binary>>,
-
-                  case tp_evm:estimate_gas(Node,ContractAddr,0,ABI) of
-                    {ok, _Res, Gas} ->
-                      io:format("evm ret: ~p~n",[_Res]),
-                      Gas;
-                    _ ->
-                      io:format("Estimate gas error~n"),
-                      0
-                  end;
-                _ ->
-                  0
-              end,
-      io:format("Gas need ~w~n",[GasNeed]),
-      GasPrice=tpapi2:gas_price(GasNeed,Node),
-      io:format("GasEstimate: ~p~n",[GasPrice]),
-      io:format("GasEstimate/10^9: ~p~n",[maps:map(fun(_,V) -> V/1.0e9 end, GasPrice)]),
-      TxSize=size(maps:get(body,Tx)),
-      FeePrice=tpapi2:fee_price(TxSize,Node),
-      io:format("Tx size ~w~n",[TxSize]),
-      io:format("FeeEstimate: ~p~n",[FeePrice]),
-      io:format("FeeEstimate/10^9: ~p~n",[maps:map(fun(_,V) -> V/1.0e9 end, FeePrice)]),
-
-
-      ok
-  end,
+  estimate(Opt),
   run(Rest, Opt);
 
 
@@ -522,4 +442,87 @@ submit(Opt) ->
     end, Opt),
   Opt.
 
+estimate(Opt) ->
+  Tx=proplists:get_value(tx,Opt),
+  if(Tx==undefined) ->
+      throw('no_tx_for_estimate');
+    true ->
+      Node=proplists:get_value(host,Opt),
+      GasNeed=case Tx of
+                #{kind:=deploy,
+                  txext := #{"code" := Code,"vm":="evm"},
+                  from:=ContractAddr } ->
+                  case tp_evm:estimate_gas(Node,ContractAddr,0,<<>>,Code) of
+                    {ok, {return,_Res}, Gas} ->
+                      io:format("evm returned ~p bytes~n",[size(_Res)]),
+                      Gas;
+                    {ok, _Res, Gas} ->
+                      io:format("evm ret: ~p~n",[_Res]),
+                      Gas;
+                    Any ->
+                      io:format("Estimate gas error: ~p~n",[Any]),
+                      0
+                  end;
+
+                #{call:=#{
+                          function := "0x0",
+                          args := [ABI]
+                         },
+                  to:=ContractAddr } ->
+                  case tp_evm:estimate_gas(Node,ContractAddr,0,ABI) of
+                    {ok, _Res, Gas} ->
+                      io:format("evm ret: ~p~n",[_Res]),
+                      Gas;
+                    Any ->
+                      io:format("Estimate gas error: ~p~n",[Any]),
+                      0
+                  end;
+
+                #{call:=#{
+                          function := SFunc,
+                          args := Args
+                         },
+                  to:=ContractAddr } ->
+                  Func=list_to_binary(SFunc),
+                  IFun = fun(<<"0x",Hex:8/binary>>) ->
+                             B=hex:decode(Hex),
+                             binary:decode_unsigned(B);
+                            (B) when is_binary(B) ->
+                             <<X:32/big,_/binary>> = esha3:keccak_256(B),
+                             X
+                         end(Func),
+                  BArgs=tpapi2:evm_encode(
+                          lists:map(
+                            fun(<<"0x",Hex/binary>>) ->
+                                {bin, hex:decode(Hex)};
+                               (Int) when is_integer(Int) ->
+                                Int;
+                               (Other) when is_binary(Other) ->
+                                Other
+                            end,Args)
+                         ),
+                  ABI  = << IFun:32/big, BArgs/binary>>,
+
+                  case tp_evm:estimate_gas(Node,ContractAddr,0,ABI) of
+                    {ok, _Res, Gas} ->
+                      io:format("evm ret: ~p~n",[_Res]),
+                      Gas;
+                    _ ->
+                      io:format("Estimate gas error~n"),
+                      0
+                  end;
+                _ ->
+                  0
+              end,
+      io:format("Gas need ~w~n",[GasNeed]),
+      GasPrice=tpapi2:gas_price(GasNeed,Node),
+      io:format("GasEstimate: ~p~n",[GasPrice]),
+      io:format("GasEstimate/10^9: ~p~n",[maps:map(fun(_,V) -> V/1.0e9 end, GasPrice)]),
+      TxSize=size(maps:get(body,Tx)),
+      FeePrice=tpapi2:fee_price(TxSize,Node),
+      io:format("Tx size ~w~n",[TxSize]),
+      io:format("FeeEstimate: ~p~n",[FeePrice]),
+      io:format("FeeEstimate/10^9: ~p~n",[maps:map(fun(_,V) -> V/1.0e9 end, FeePrice)]),
+      Opt
+  end.
 

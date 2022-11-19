@@ -9,6 +9,7 @@ estimate_gas(Node, Address, Value, ABI) ->
 
 estimate_gas(Node, Address, Value, ABI, BCode) ->
   Gas = 1000000000,
+  try
   {Host, Port, Opts,_} = tpapi2:parse_url(Node),
   {ok, ConnPid} = gun:open(Host,Port,Opts),
   {ok, _} = gun:await_up(ConnPid),
@@ -67,8 +68,8 @@ estimate_gas(Node, Address, Value, ABI, BCode) ->
             },
   Res=try
         eevm:eval(Bytecode,#{},State0)
-      catch Ec:Ee:Stack ->
-              {error, iolist_to_binary(io_lib:format("~p:~p@~p",[Ec,Ee,hd(Stack)]))}
+      catch EEc:EEe:EStack ->
+              {error, iolist_to_binary(io_lib:format("~p:~p@~p",[EEc,EEe,hd(EStack)]))}
       end,
   gun:close(ConnPid),
   case Res of
@@ -90,6 +91,9 @@ estimate_gas(Node, Address, Value, ABI, BCode) ->
       {error, bad_jump, Gas-GL};
     {error, {bad_instruction,I}, #{gas:=GL}} ->
       {error, {bad_instruction,I}, Gas-GL}
+  end
+  catch Ec:Ee:Stack ->
+          {error, iolist_to_binary(io_lib:format("~p:~p@~p",[Ec,Ee,hd(Stack)]))}
   end.
 
 q_raw(Node, Address, Function, Args) ->
@@ -149,7 +153,8 @@ q_raw(Node, Address, Function, Args) ->
   CallData = << IFun:32/big, BArgs/binary>>,
 
   Res=try
-        eevm:eval(Bytecode,#{},State0#{cd=>CallData,sha3=> fun esha3:keccak_256/1})
+        eevm:eval(Bytecode,#{},State0#{cd=>CallData,
+                                       sha3=> fun esha3:keccak_256/1})
       catch Ec:Ee:Stack ->
               {error, iolist_to_binary(io_lib:format("~p:~p@~p",[Ec,Ee,hd(Stack)]))}
       end,
@@ -338,7 +343,8 @@ run(Address, Code, Data) ->
         la=>0,
         log=>[]
        },
-  eevm:eval(Code,#{},State0#{cd=>CallData,sha3=> fun esha3:keccak_256/1,
+  eevm:eval(Code,#{},State0#{cd=>CallData,
+                             sha3=> fun esha3:keccak_256/1,
                              extra=>Ex1,
                              sload=>SLoad,
                              finfun=>FinFun,

@@ -67,7 +67,8 @@ run([{stask,TaskID}|Rest], Opt) ->
                  RBucket
                 ]),
       io:format("Upload base address ~s~n",[UURL]),
-      io:format("Example for manifest.json: ~s/~w/manifest.json~n",[UURL,TaskID]),
+      io:format("Example for manifest.json: ~s/~w~n",[UURL,TaskID]),
+      io:format("Example for any other file: ~s/~w/filename.ext~n",[UURL,TaskID]),
   run(Rest, Opt);
 
 run([{bucketname,TBucket}|Rest], Opt) ->
@@ -207,7 +208,7 @@ run([{baseurl, URL}|Rest], Opt) ->
   Node=proplists:get_value(host,Opt),
   {ok,#{<<"seq">>:=Seq,<<"amount">>:=Am}}=tpapi2:ledger(Node, MyAddr),
 
-  GasFun=fun(RequiredGas, TxBytes) ->
+  GasFun=fun(RequiredGas, _TxBytes) ->
              Prices=tpapi2:gas_price(RequiredGas,Node),
              if(size(Prices)==0) ->
                  [];
@@ -261,6 +262,9 @@ run([sign|Rest], Opt) ->
 run([submit|Rest], Opt) ->
   run(Rest, tpcli_main:submit(Opt));
 
+run([estimate|Rest], Opt) ->
+  run(Rest, tpcli_main:estimate(Opt));
+
 run([ss|Rest], Opt) ->
   run(Rest, tpcli_main:submit(tpcli_main:sign(Opt)));
   
@@ -275,11 +279,12 @@ run([ping|Rest], Opt) ->
 
 run([{mkmanifest,Dirname}|Rest], Opt) ->
   {ok,#{manifest:=JSON, size:=Size, files_count:=C, hash:= Hash}} = tp_manifest:dir2manifest(Dirname),
+  FManifest=proplists:get_value(manifest, Opt),
   io:format("Files found: ~w~n",[C]),
-  io:format("Manifest writtent to manifest.json~n"),
+  io:format("Manifest writtent to ~s~n",[FManifest]),
   io:format("Manifest hash: ~s~n",[hex:encode(Hash)]),
   io:format("Total files size: ~w~n",[Size]),
-  file:write_file("manifest.json",JSON),
+  file:write_file(FManifest,JSON),
   run(Rest,Opt);
 
 run([Other|Rest], Opt) ->

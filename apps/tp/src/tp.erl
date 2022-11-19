@@ -91,6 +91,7 @@ options_storage() ->
    {baseurl,   undefined, "newprovider", string, "Create new storage provider with <baseurl> or <baseurl,uploadurl> "},
    {sign,      undefined, "sign",    undefined, "Sign transaction"},
    {showtx,    undefined, "showtx",  undefined, "Display tx"},
+   {estimate, undefined, "estimate",      undefined, "Estimate fee and gas"},
    {submit,    undefined, "submit",  undefined, "Send transaction"},
    {ss,        undefined, "ss",  undefined, "Sign & submit"},
    {address,   undefined, undefined, string, "Storage contract address"}
