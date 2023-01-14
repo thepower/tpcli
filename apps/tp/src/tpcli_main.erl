@@ -511,6 +511,16 @@ estimate(Opt) ->
                       io:format("Estimate gas error~n"),
                       0
                   end;
+                #{to:=ContractAddr } ->
+                  ABI= <<>>,
+                  case tp_evm:estimate_gas(Node,ContractAddr,0,ABI) of
+                    {ok, _Res, Gas} ->
+                      io:format("evm ret: ~p~n",[_Res]),
+                      Gas;
+                    _ ->
+                      io:format("Estimate gas error~n"),
+                      0
+                  end;
                 _ ->
                   0
               end,

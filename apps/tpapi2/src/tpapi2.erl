@@ -4,8 +4,10 @@
          parse_url/1,
          ping/1,
          reg/2,
+         wait_tx/3,
          evm_encode/1,
          settings/1,
+         settings/2,
          ledger/2,
          get_seq/2,
          code/2,
@@ -15,10 +17,14 @@
          gas_price/2,
          fee_price/2
         ]).
+-export([
+         connect/1,
+         do_get/2
+        ]).
 
 connect(Node) ->
   {Host, Port, Opts,_} = parse_url(Node),
-  {ok, ConnPid} = gun:open(Host,Port,Opts),
+  {ok, ConnPid} = gun:open(Host,Port,Opts#{retry=>0}),
   case gun:await_up(ConnPid) of
     {ok, _} ->
       {ok, ConnPid};
@@ -42,6 +48,9 @@ do_get(ConnPid, Endpoint) ->
   end.
 
 submit_tx(Node, Tx) ->
+  submit_tx(Node, Tx, []).
+
+submit_tx(Node, Tx, Opts) ->
   {ok, ConnPid} = connect(Node),
   Post=fun(Endpoint, Bin) ->
            StreamRef = gun:post(ConnPid, Endpoint, [], Bin, #{}),
@@ -67,7 +76,13 @@ submit_tx(Node, Tx) ->
               <<"result">>:= <<"ok">>,
               <<"txid">> := TxID
              } ->
-              wait_tx(ConnPid, TxID, erlang:system_time(second)+30);
+              case lists:member(nowait,Opts) of
+                true ->
+                  gun:close(ConnPid),
+                  {ok,TxID};
+                false ->
+                  wait_tx(ConnPid, TxID, erlang:system_time(second)+30)
+              end;
             _ ->
               gun:close(ConnPid),
               throw('bad_result')
@@ -157,6 +172,9 @@ ledger(Node, Addr) ->
 
 
 settings(Node) ->
+  settings(Node,[]).
+
+settings(Node, Path) ->
   {ok, ConnPid} = connect(Node),
   {Code, Body} = do_get(ConnPid,"/api/settings.mp"),
   gun:close(ConnPid),
@@ -164,13 +182,22 @@ settings(Node) ->
        {ok,M}=msgpack:unpack(Body),
        case M of
          #{<<"ok">> := true, <<"settings">> := Sets} ->
-           {ok, Sets};
+           {ok, take_settings(Path,Sets)};
          _ ->
            throw('cant_decode')
        end;
      true ->
        {error, Code}
   end.
+
+take_settings(Path,Sets) when is_list(Path) ->
+  settings:get(Path,Sets);
+
+take_settings(Paths,Sets) when is_map(Paths) ->
+  maps:map(
+    fun(_,Path) ->
+        settings:get(Path,Sets)
+    end, Paths).
 
 ping(Node) ->
   {ok, ConnPid} = connect(Node),

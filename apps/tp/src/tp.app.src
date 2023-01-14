@@ -11,7 +11,8 @@
     esha3,
     getopt,
     certifi,
-    stdlib
+    stdlib,
+    cowboy
     ]},
   {env,[]},
   {modules, []},

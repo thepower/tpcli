@@ -126,7 +126,9 @@ transform (<<"call">>,#{<<"function">>:=F,<<"args">>:=Arg},A) ->
                           fun(<<"0x",Hex/binary>>) ->
                               hex:decode(Hex);
                              (Int) when is_integer(Int) ->
-                              Int
+                              Int;
+                             (Str) when is_binary(Str) ->
+                              binary_to_list(Str)
                           end,Arg)
                  },A);
 
