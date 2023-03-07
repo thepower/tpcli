@@ -8,6 +8,25 @@ main([]) ->
 main(["storage"]) ->
   getopt:usage(options_storage(), escript:script_name());
 
+main(["info"]) ->
+  getopt:usage(options_info(), escript:script_name());
+
+main(["server"]) ->
+  config_logger(),
+  tp_http_handler:start();
+
+main(["info"|Args]) ->
+  config_logger(),
+  OptSpecList = options_info(),
+  case getopt:parse(OptSpecList, Args) of
+    {ok, {Options, NonOptArgs}} ->
+      tpcli_info:main_run(Options, NonOptArgs);
+    {error, {Reason, Data}} ->
+      io:format(standard_error,"Error: ~s ~p~n~n", [Reason, Data]),
+      getopt:usage(OptSpecList, "tpcli")
+  end;
+
+
 main(["storage"|Args]) ->
   config_logger(),
   OptSpecList = options_storage(),
@@ -29,6 +48,21 @@ main(Args) ->
       io:format(standard_error,"Error: ~s ~p~n~n", [Reason, Data]),
       getopt:usage(OptSpecList, "tpcli")
   end.
+
+options_info() ->
+  Conf=tp:get_config(),
+  [
+   %% {Name,   ShortOpt,  LongOpt,       ArgSpec,               HelpMsg}
+   {host,       $h,        "host",       {string,
+                                          proplists:get_value(host,Conf,"httpsi://localhost:49800/")},
+    "tpnode's base address, use httpsi as protocol for ssl without cert verification"},
+   {chain,      $c,       "chain",      {integer, 0}, "chain number, 0 - node's chain"},
+   {fetch_genesis, undefined, "fetch_genesis", undefined, "Fetch node's chain genesis block"},
+   {nodes, undefined, "nodes", undefined, "get chain's nodes"},
+   {candidates, undefined, "candidates", undefined, "analyze block candidates"}
+  ].
+
+
 
 options_main() ->
   Conf=tp:get_config(),

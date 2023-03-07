@@ -95,6 +95,7 @@ run([{bucketname,TBucket}|Rest], Opt) ->
   Node=proplists:get_value(host,Opt),
   {Seq,Am} = case tpapi2:ledger(Node, MyAddr) of
                {ok,#{<<"seq">>:=Seq1,<<"amount">>:=Am1}} -> {Seq1, Am1};
+               {ok,#{<<"amount">>:=Am1}} -> {0, Am1};
                Err ->
                  logger:notice("Can't get ledger for address ~s: ~p",[naddress:encode(MyAddr), Err]),
                  {0,#{}}
@@ -172,7 +173,8 @@ run([{bucketname,TBucket}|Rest], Opt) ->
                            RBucket
                           ]),
                 io:format("Upload base address ~s~n",[UURL]),
-                io:format("manifest.json upload path: ~s/~w/manifest.json~n",[UURL,R]),
+                io:format("manifest.json upload path: ~s/~w~n",[UURL,R]),
+                io:format("files upload path: ~s/~w/file~n",[UURL,R]),
                 ok;
                (Any) ->
                 io:format("Unexpected res ~p~n",[Any]),

@@ -497,6 +497,8 @@ estimate(Opt) ->
                                 {bin, hex:decode(Hex)};
                                (Int) when is_integer(Int) ->
                                 Int;
+                               (Other) when is_list(Other) ->
+                                list_to_binary(Other);
                                (Other) when is_binary(Other) ->
                                 Other
                             end,Args)

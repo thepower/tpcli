@@ -11,7 +11,8 @@
          ledger/2,
          get_seq/2,
          code/2,
-         match_cur/2
+         match_cur/2,
+         httpget/2
         ]).
 -export([
          gas_price/2,
@@ -33,8 +34,11 @@ connect(Node) ->
   end.
 
 do_get(ConnPid, Endpoint) ->
+do_get1(ConnPid, Endpoint).
+
+do_get1(ConnPid, Endpoint) ->
   StreamRef = gun:get(ConnPid, Endpoint, []),
-  {response, Fin, Code, _Headers} = gun:await(ConnPid, StreamRef),
+  {response, Fin, Code, Headers} = gun:await(ConnPid, StreamRef),
   if(Code == 200) ->
       Body=case Fin of
              fin -> <<>>;
@@ -42,9 +46,9 @@ do_get(ConnPid, Endpoint) ->
                {ok, Body2} = gun:await_body(ConnPid, StreamRef),
                Body2
            end,
-      {Code, Body};
+      {Code, Headers, Body};
     true ->
-      {Code, <<>>}
+      {Code, Headers, <<>>}
   end.
 
 submit_tx(Node, Tx) ->
@@ -125,7 +129,7 @@ wait_tx(ConnPid, TxID, Timeout) ->
 
 code(Node, Addr) ->
   {ok, ConnPid} = connect(Node),
-  {Code, Body} = do_get(ConnPid,"/api/address/0x"++binary_to_list(hex:encode(Addr))++"/code"),
+  {Code, _Hdr, Body} = do_get(ConnPid,"/api/address/0x"++binary_to_list(hex:encode(Addr))++"/code"),
   gun:close(ConnPid),
   if Code==200 ->
        {ok, Body};
@@ -135,7 +139,7 @@ code(Node, Addr) ->
 
 get_seq(Node, Addr) ->
   {ok, ConnPid} = connect(Node),
-  {Code, Body} = do_get(ConnPid,"/api/address/0x"++binary_to_list(hex:encode(Addr))++".mp?bin=raw"),
+  {Code, _Hdr, Body} = do_get(ConnPid,"/api/address/0x"++binary_to_list(hex:encode(Addr))++".mp?bin=raw"),
   gun:close(ConnPid),
   if Code==200 ->
        {ok,M}=msgpack:unpack(Body),
@@ -152,10 +156,27 @@ get_seq(Node, Addr) ->
        {error, Code}
   end.
 
+httpget(Node, Path) ->
+  {ok, ConnPid} = connect(Node),
+  {Code, Header, Body} = do_get1(ConnPid,Path),
+  gun:close(ConnPid),
+  if Code==200 ->
+       case proplists:get_value(<<"content-type">>, Header, <<"application/octet-stream">>) of
+         <<"application/json">> ->
+           jsx:decode(Body, [return_maps]);
+         <<"application/msgpack">> ->
+           {ok,M}=msgpack:unpack(Body),
+           M;
+         _ ->
+           Body
+       end;
+     true ->
+       {error, Code}
+  end.
 
 ledger(Node, Addr) ->
   {ok, ConnPid} = connect(Node),
-  {Code, Body} = do_get(ConnPid,"/api/address/0x"++binary_to_list(hex:encode(Addr))++".mp?bin=raw"),
+  {Code, _Hdr, Body} = do_get(ConnPid,"/api/address/0x"++binary_to_list(hex:encode(Addr))++".mp?bin=raw"),
   gun:close(ConnPid),
   if Code==200 ->
        {ok,M}=msgpack:unpack(Body),
@@ -176,7 +197,7 @@ settings(Node) ->
 
 settings(Node, Path) ->
   {ok, ConnPid} = connect(Node),
-  {Code, Body} = do_get(ConnPid,"/api/settings.mp"),
+  {Code, _Hdr, Body} = do_get(ConnPid,"/api/settings.mp"),
   gun:close(ConnPid),
   if Code==200 ->
        {ok,M}=msgpack:unpack(Body),
@@ -201,7 +222,7 @@ take_settings(Paths,Sets) when is_map(Paths) ->
 
 ping(Node) ->
   {ok, ConnPid} = connect(Node),
-  {Code, Body} = do_get(ConnPid,"/api/status"),
+  {Code, _Hdr, Body} = do_get(ConnPid,"/api/status"),
   gun:close(ConnPid),
   if Code==200 ->
        Res=jsx:decode(Body, [return_maps]),
