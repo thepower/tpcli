@@ -9,7 +9,7 @@ The `tp` CLI utility is a powerful tool, that will help you:
 
 The tool consists of two parts:
 
-- [generic part](https://doc.thepower.io/docs/Maintain/tools/tp-cli#generic-part-commands);
-- [storage part](https://doc.thepower.io/docs/Maintain/tools/tp-cli#storage-part-commands).
+- [generic part](https://doc.thepower.io/docs/Tools/tp-cli#generic-part-commands);
+- [storage part](https://doc.thepower.io/docs/Tools/tp-cli#storage-part-commands).
 
-You can find the description usage examples of `tp` CLI [here](https://doc.thepower.io/docs/Maintain/tools/tp-cli).
+You can find the description and usage examples of `tp` CLI **[here](https://doc.thepower.io/docs/Tools/tp-cli)**.
