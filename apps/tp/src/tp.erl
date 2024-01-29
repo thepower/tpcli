@@ -11,6 +11,19 @@ main(["storage"]) ->
 main(["info"]) ->
   getopt:usage(options_info(), escript:script_name());
 
+main(["showabi",Filename]) ->
+  File=contract_evm_abi:parse_abifile(Filename),
+  if(File==[]) ->
+      io:format("~s is empty~n",[Filename]);
+    true ->
+      lists:foreach(
+        fun({{Kind,_Name},_In,_Out}=Signature) ->
+            io:format("~p ~s~n",[Kind,contract_evm_abi:mk_fullsig(Signature)])
+        end,
+        File)
+  end,
+  ok;
+
 main(["server"]) ->
   config_logger(),
   tp_http_handler:start();
@@ -85,6 +98,7 @@ options_main() ->
    {sets,       undefined, "get_settings",undefined, "get chain settings"},
    {address,    undefined, "get_ledger", string, "get ledger for address"},
    {getcode,    undefined, "get_code", string, "get ledger's code for address"},
+   {logs,    undefined, "logs", string, "get logs for block with height"},
    {reg,        undefined, "register",    undefined, "run register"},
    {example,    undefined, "example",     undefined, "save example JSON for construct"},
    {construct,  undefined, "construct",   string, "Construct tx from JSON <filename>"},
@@ -142,13 +156,18 @@ config_logger() ->
           },
   logger:add_handler(default, logger_std_h, Config).
 
-get_config() ->
-  {ok, [[Home]]} = init:get_argument(home),
-  ConfDir = filename:join(Home, ".config/tp"),
-  Filename = filename:join(ConfDir, "cli.config"),
+get_config(Filename) ->
   case file:consult(Filename) of
     {ok, Config} ->
       Config;
     _ ->
       []
   end.
+
+get_config() ->
+  {ok, [[Home]]} = init:get_argument(home),
+  ConfDir = filename:join(Home, ".config/tp"),
+  Filename = filename:join(ConfDir, "cli.config"),
+  get_config(".tpcli.config")++
+  get_config(Filename).
+
