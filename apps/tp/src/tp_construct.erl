@@ -150,6 +150,8 @@ decode_json_args(Args) ->
   lists:map(
     fun(<<"0x",B/binary>>) ->
         hex:decode(B);
+       ([<<"!address">>,Args2]) ->
+        naddress:decode(Args2);
        ([<<"!abiencode">>,Function2,Args2]) ->
         contract_evm_abi:encode_abi_call(decode_json_args(Args2),Function2);
        ([<<"!slice">>,Start,Len,Args2]) ->
