@@ -1,7 +1,7 @@
 -module(contract_evm_abi).
 
 -export([parse_abifile/1]).
--export([find_function/2, find_event/2]).
+-export([find_function/2, find_event/2, find_event_hash/2]).
 -export([all_events/1, mk_sig/1, mk_fullsig/1]).
 -export([sig_events/1]).
 -export([decode_abi/2]).
@@ -13,6 +13,7 @@
 -export([encode_simple/1]).
 -export([parse_signature/1]).
 -export([encode_abi/2]).
+-export([parse_type/1]).
 -export([sig32/1, keccak/1]).
 -export([unwrap/1]).
 
@@ -60,6 +61,11 @@ unwrap([L|Rest]) ->
 unwrap([]) ->
   [].
 
+%force_cast(address,X) when is_binary(X) ->
+%  binary:decode_unsigned(X)
+%  if(size(X)<2) ->
+%      <<()
+%  binary:decode_unsigned(X);
 force_cast(uint256,X) when is_binary(X) ->
   binary:decode_unsigned(X);
 force_cast(_,X) ->
@@ -187,6 +193,16 @@ find_event(Sig, ABI) when is_binary(Sig), is_list(ABI) ->
         true;
       ({{event,LName},CS,_}) when LName == Name ->
         [ Type || {_,Type} <- CS ] == Args;
+       (_) ->
+        false
+    end,
+    ABI).
+
+find_event_hash(SigHash, ABI) when is_binary(SigHash), is_list(ABI) ->
+  lists:filter(
+    fun
+      ({{event,_LName},_CS,_}=ABI1) ->
+        SigHash==keccak(mk_sig(ABI1));
        (_) ->
         false
     end,
@@ -382,20 +398,48 @@ convert_io(List) ->
           <<"name">> := Name,
           <<"type">> := Type,
           <<"indexed">>:= true}) ->
-        {Name, {indexed,convert_type(Type)}};
+        {Name, {indexed,parse_type(Type)}};
        (#{
           <<"name">> := Name,
           <<"type">> := Type}) ->
-        {Name, convert_type(Type)}
+        {Name, parse_type(Type)}
     end, List).
 
 
-convert_type(<<"string">>) -> string;
-convert_type(<<"address">>) -> address;
-convert_type(<<"uint8">>) -> uint8;
-convert_type(<<"bytes">>) -> bytes;
-convert_type(<<"bytes[]">>) -> {darray,bytes};
-convert_type(<<"bytes",N/binary>>=E) when size(N)==1 orelse size(N)==2 ->
+parse_type(L) ->
+  case binary:split(L,<<"[">>) of
+    [ L1 ] ->
+      convert_type1(L1);
+    [ L1, L2 ] ->
+      case binary:split(L2,<<"]">>) of
+        [<<>>,<<>>] ->
+          {darray,convert_type1(L1)};
+        [AS,<<>>] ->
+          ArrSize=binary_to_integer(AS),
+          {{fixarray,ArrSize},convert_type1(L1)}
+      end
+  end.
+
+convert_type1(<<"string">>) -> string;
+convert_type1(<<"address">>) -> address;
+convert_type1(<<"uint256">>) -> uint256;
+convert_type1(<<"uint32">>) -> uint32;
+convert_type1(<<"uint8">>) -> uint8;
+convert_type1(<<"bytes">>) -> bytes;
+%convert_type1(<<"bytes[]">>) -> {darray,bytes};
+convert_type1(<<"uint",N/binary>>=E) ->
+  S=binary_to_integer(N),
+  if(S<1) ->
+      throw({'bad_type',E});
+    (S>256) ->
+      throw({'bad_type',E});
+    (S rem 8) > 0 ->
+      throw({'bad_type',E});
+    true ->
+      {uint,S}
+  end;
+
+convert_type1(<<"bytes",N/binary>>=E) ->
   S=binary_to_integer(N),
   if(S<1) -> throw({'bad_type',E});
     (S>32) -> throw({'bad_type',E});
@@ -403,27 +447,25 @@ convert_type(<<"bytes",N/binary>>=E) when size(N)==1 orelse size(N)==2 ->
   end,
   {bytes,S};
 
-convert_type(<<"uint32">>) -> uint32;
-convert_type(<<"uint256">>) -> uint256;
-convert_type(<<"string[]">>) -> {darray,string};
+%convert_type1(<<"string[]">>) -> {darray,string};
 
-convert_type(<<"uint8[",N/binary>>) when size(N)>0 ->
-  case binary:split(N,<<"]">>) of
-    [<<>>,<<>>] -> {darray,uint8};
-    [S,<<>>] ->
-  Size=binary_to_integer(S),
-  {{fixarray,Size},uint8}
-  end;
-
-convert_type(<<"uint256[",N/binary>>) when size(N)>0 ->
-  case binary:split(N,<<"]">>) of
-    [<<>>,<<>>] -> {darray,uint256};
-    [S,<<>>] ->
-  Size=binary_to_integer(S),
-  {{fixarray,Size},uint256}
-  end;
-convert_type(<<"uint8[]">>) -> {darray,uint8};
-convert_type(<<"bool">>) -> bool.
+%convert_type1(<<"uint8[",N/binary>>) when size(N)>0 ->
+%  case binary:split(N,<<"]">>) of
+%    [<<>>,<<>>] -> {darray,uint8};
+%    [S,<<>>] ->
+%  Size=binary_to_integer(S),
+%  {{fixarray,Size},uint8}
+%  end;
+%
+%convert_type1(<<"uint256[",N/binary>>) when size(N)>0 ->
+%  case binary:split(N,<<"]">>) of
+%    [<<>>,<<>>] -> {darray,uint256};
+%    [S,<<>>] ->
+%  Size=binary_to_integer(S),
+%  {{fixarray,Size},uint256}
+%  end;
+%convert_type1(<<"uint8[]">>) -> {darray,uint8};
+convert_type1(<<"bool">>) -> bool.
 
 encode_type(<<Input:256/big>>, uint256) ->
   <<Input:256/big>>;
