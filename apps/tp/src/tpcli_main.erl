@@ -1,7 +1,7 @@
 -module(tpcli_main).
 
 -export([main_run/2,run/2]).
--export([sign/1,submit/1,estimate/1]).
+-export([sign/1,submit/1,estimate/1,getsig/1]).
 -include_lib("public_key/include/public_key.hrl").
 
 main_run(Options, NonOpt) ->
@@ -22,6 +22,7 @@ main_run(Options, NonOpt) ->
                  ({savefilename,_Filename}) -> true;
                  ({address,_}) -> true;
                  ({wimp,_}) -> true;
+                 ({logs,_}) -> true;
                  ({getcode,_}) -> true;
                  ({gasprice,_}) -> true;
                  ({mkmanifest,_}) -> true;
@@ -35,7 +36,8 @@ main_run(Options, NonOpt) ->
     logger:info("Opts ~p~n",[Opts]),
     run(Act, Opts)
   catch throw:Atom ->
-          io:format(standard_error,"\nError: ~p\n",[Atom])
+          io:format(standard_error,"\nError: ~p\n",[Atom]),
+          exit(1)
   end.
 
 run([], _) ->
@@ -102,11 +104,74 @@ run([{keyfile,Filename}|Rest], Opt) ->
       io:format("bad keyfile ~s~n",[Filename]),
       throw('bad_keyfile')
   end,
-  run(Rest, [{keyfile,Filename}|proplists:delete(rawkey,proplists:delete(keyfile,Opt))]);
+  io:format("set key ~p~n",[Filename]),
+  L=case proplists:get_value(host,Opt,"httpsi://localhost:49800/") of
+      "httpsi://localhost:49800/" ->
+        Prev=readkey(Filename),
+        case proplists:get_value(node,Prev) of
+          undefined ->
+            [];
+          Host ->
+            [{host,Host}]
+        end;
+      _ ->
+        []
+    end,
+  io:format("set key ~p~n",[L]),
+  R=L++[{keyfile,Filename}|proplists:delete(rawkey,proplists:delete(keyfile,Opt))],
+  run(Rest, R);
 
 run([{getcode,Addr}|Rest], Opt) ->
   {ok,R}=tpapi2:code(proplists:get_value(host,Opt),naddress:decode(Addr)),
   io:format("~s~n",[hex:encode(R)]),
+  run(Rest, Opt);
+
+run([{logs,Height}|Rest], Opt) ->
+  {ok,R}=tpapi2:get_log(proplists:get_value(host,Opt),list_to_integer(Height)),
+  L=lists:foldl(
+      fun([TxID,<<"evm">>, From, To, Data, [Signature|Topics]],A) ->
+          case getsig(Signature) of
+            not_found ->
+              [#{tx=>TxID,
+                 from=>naddress:encode(From),
+                 to=>naddress:encode(To),
+                 data=>hex:encode(Data),
+                 sig=>hex:encode(Signature),
+                 tpoics=>Topics
+                }|A];
+            {_, ABIIn, _} = ABI ->
+              [#{tx=>TxID,
+                 from=>naddress:encode(From),
+                 to=>naddress:encode(To),
+                 data=>hex:encode(Data),
+                 decode => try
+                             contract_evm_abi:decode_abi(Data, ABIIn, Topics)
+                           catch Ec:Ee ->
+                                   {error, {Ec,Ee}}
+                           end,
+                 sig=>contract_evm_abi:mk_sig(ABI),
+                 tpoics=>Topics
+                }|A];
+            [Found|_] = _All ->
+              {ok,{_, ABI, _}}=contract_evm_abi:parse_signature(Found),
+              [#{tx=>TxID,
+                 from=>naddress:encode(From),
+                 to=>naddress:encode(To),
+                 data=>hex:encode(Data),
+                 decode => try
+                             contract_evm_abi:decode_abi(Data, ABI, Topics)
+                           catch Ec:Ee ->
+                                   {error, {Ec,Ee}}
+                           end,
+                 sig=>Found,
+                 tpoics=>Topics
+                }|A]
+          end
+      end, [], R),
+  io:format("~p~n",[L]),
+  %lists:foreach(fun(Li) ->
+  %                  io:format("~s~n",[jsx:encode(Li)])
+  %              end,L),
   run(Rest, Opt);
 
 run([{address,Addr}|Rest], Opt) ->
@@ -185,7 +250,7 @@ run([{construct,Filename}|Rest], Opt) ->
                   Adr ->
                     MyAddr=naddress:decode(Adr),
                     case tpapi2:get_seq(Node, MyAddr) of
-                      {ok,S} -> S;
+                      {ok,S} -> S+1;
                       Err ->
                         logger:notice("Can't get ledger for address ~s: ~p",[naddress:encode(MyAddr), Err]),
                         0
@@ -420,7 +485,16 @@ submit(Opt) ->
           tx:pack(Tx)
          ),
   case Res of
-    {ok, #{<<"ok">> := true,<<"block">> := Block, <<"txid">>:=TxID, <<"retval">> := RetVal}} ->
+    {ok, #{<<"ok">> := true,
+           <<"block">> := Block,
+           <<"txid">>:=TxID,
+           <<"revert">> := Reason}} ->
+      io:format("Tx submit revert~n TxID: ~s~n BlkID: ~s~n",[TxID, Block]),
+      io:format(" Revert: ~p~n",[Reason]);
+    {ok, #{<<"ok">> := true,
+           <<"block">> := Block,
+           <<"txid">>:=TxID,
+           <<"retval">> := RetVal}} ->
       io:format("Tx submit ok~n TxID: ~s~n BlkID: ~s~n",[TxID, Block]),
       io:format(" Return: ~p~n",[RetVal]);
     {ok, #{<<"ok">> := true,<<"block">> := Block, <<"txid">>:=TxID}} ->
@@ -429,7 +503,8 @@ submit(Opt) ->
     {ok, R} ->
       io:format("Tx submit ~p~n",[R]);
     {error, R} ->
-      io:format("Tx submit error ~p~n",[R])
+      io:format("Tx submit error ~p~n",[R]),
+      exit(1)
   end,
   lists:foreach(
     fun({submitcb, F}) when is_function(F) ->
@@ -452,7 +527,7 @@ estimate(Opt) ->
                 #{kind:=deploy,
                   txext := #{"code" := Code,"vm":="evm"},
                   from:=ContractAddr } ->
-                  case tp_evm:estimate_gas(Node,ContractAddr,0,<<>>,Code) of
+                  case tp_evm:estimate_gas(Node,ContractAddr,0,<<>>,#{code=>Code}) of
                     {ok, {return,_Res}, Gas} ->
                       io:format("evm returned ~p bytes~n",[size(_Res)]),
                       Gas;
@@ -468,8 +543,9 @@ estimate(Opt) ->
                           function := "0x0",
                           args := [ABI]
                          },
+                  from:=FA,
                   to:=ContractAddr } ->
-                  case tp_evm:estimate_gas(Node,ContractAddr,0,ABI) of
+                  case tp_evm:estimate_gas(Node,ContractAddr,0,ABI,#{caller=>FA,origin=>FA}) of
                     {ok, _Res, Gas} ->
                       io:format("evm ret: ~p~n",[_Res]),
                       Gas;
@@ -482,6 +558,7 @@ estimate(Opt) ->
                           function := SFunc,
                           args := Args
                          },
+                  from:=FA,
                   to:=ContractAddr } ->
                   Func=list_to_binary(SFunc),
                   IFun = fun(<<"0x",Hex:8/binary>>) ->
@@ -505,7 +582,7 @@ estimate(Opt) ->
                          ),
                   ABI  = << IFun:32/big, BArgs/binary>>,
 
-                  case tp_evm:estimate_gas(Node,ContractAddr,0,ABI) of
+                  case tp_evm:estimate_gas(Node,ContractAddr,0,ABI,#{caller=>FA,origin=>FA}) of
                     {ok, _Res, Gas} ->
                       io:format("evm ret: ~p~n",[_Res]),
                       Gas;
@@ -513,9 +590,9 @@ estimate(Opt) ->
                       io:format("Estimate gas error~n"),
                       0
                   end;
-                #{to:=ContractAddr } ->
+                #{to:=ContractAddr, from:=FA } ->
                   ABI= <<>>,
-                  case tp_evm:estimate_gas(Node,ContractAddr,0,ABI) of
+                  case tp_evm:estimate_gas(Node,ContractAddr,0,ABI,#{caller=>FA,origin=>FA}) of
                     {ok, _Res, Gas} ->
                       io:format("evm ret: ~p~n",[_Res]),
                       Gas;
@@ -536,5 +613,62 @@ estimate(Opt) ->
       io:format("FeeEstimate: ~p~n",[FeePrice]),
       io:format("FeeEstimate/10^9: ~p~n",[maps:map(fun(_,V) -> V/1.0e9 end, FeePrice)]),
       Opt
+  end.
+
+getsig(<<0,221,242,82,173,27,226,200,155,105,194,176,104,252,55,141,170,149,43,167,241,
+  99,196,161,22,40,245,90,77,245,35,179,239>>) ->
+  {{function,<<"Transfer">>},
+   [{<<"from">>,{indexed,address}},
+    {<<"to">>,{indexed,address}},
+    {<<"value">>,uint256}], undefined};
+
+getsig(<<0,140,91,225,229,235,236,125,91,209,79,113,66,125,30,132,243,221,3,20,192,247,
+  178,41,30,91,32,10,200,199,195,185,37>>) ->
+  {{function,<<"Approval">>},
+   [{<<"from">>,{indexed,address}},
+    {<<"to">>,{indexed,address}},
+    {<<"value">>,uint256}], undefined};
+
+getsig(Any) ->
+  AbiS=lists:foldl(
+         fun(Filename,false) ->
+             try
+               ABI=contract_evm_abi:parse_abifile(Filename),
+               R=contract_evm_abi:find_event_hash(Any,ABI),
+               case R of
+                 [] ->
+                   false;
+                 [Event] ->
+                   Event
+               end
+             catch Ec:Ee:S ->
+                     io:format("~p:~p @ ~p~n",[Ec,Ee,S]),
+                     false
+             end;
+             (_,A) -> A
+         end, false,
+         filelib:wildcard("*.abi")
+        ),
+  if(AbiS == false) ->
+      fetchsig(Any);
+    true ->
+      AbiS
+  end.
+
+
+
+%event Transfer(address indexed _from, address indexed _to, uint256 _value)
+%event Approval(address indexed _owner, address indexed _spender, uint256 _value)
+
+fetchsig(Sig) ->
+  %curl https://www.4byte.directory/api/v1/event-signatures/\?hex_signature=0xBA6B0A89802623C9DB933568CE2F64B9D820F2243C46F0B10C4044E449AF3FC5 | jq '.results'
+  io:format("~p~n",[Sig]),
+  case tpapi2:httpget("https://www.4byte.directory",
+                      list_to_binary(["/api/v1/event-signatures/?hex_signature=0x",binary:encode_hex(Sig)])) of
+    #{<<"count">>:=0} ->
+      not_found;
+    #{<<"count">>:=_,<<"results">>:=R} ->
+      io:format("~p~n",[R]),
+      [ TS || #{<<"text_signature">>:=TS} <- R ]
   end.
 

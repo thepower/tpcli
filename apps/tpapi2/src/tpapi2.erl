@@ -10,6 +10,7 @@
          settings/2,
          ledger/2,
          get_seq/2,
+         get_log/2,
          code/2,
          match_cur/2,
          httpget/2
@@ -136,6 +137,29 @@ code(Node, Addr) ->
      true ->
        {error, Code}
   end.
+
+get_log(Node, Height) ->
+  {ok, ConnPid} = connect(Node),
+  %http://c1n2.thepower.io:1081/api/logs_height/2786
+  {Code, _Hdr, Body} = do_get(ConnPid,"/api/logs_height/"++integer_to_list(Height)++".mp?bin=raw"),
+  gun:close(ConnPid),
+  if Code==200 ->
+       {ok,M}=msgpack:unpack(Body),
+       case M of
+         #{<<"ok">> := true, <<"log">> := #{<<"logs">>:=Data}} ->
+           {ok,lists:map(
+                 fun(D) ->
+                     {ok, DD} = msgpack:unpack(D),
+                     DD
+                 end, Data)};
+         Any ->
+           logger:notice("Got unexpected result ~p",[Any]),
+           {error, decode}
+       end;
+     true ->
+       {error, Code}
+  end.
+
 
 get_seq(Node, Addr) ->
   {ok, ConnPid} = connect(Node),
