@@ -242,7 +242,8 @@ run(Address, Code, Data) ->
      end,
 
   SLoad=fun(Addr, IKey, _Ex0) ->
-            Res=ldb:get(binary:encode_unsigned(Addr), {storage, IKey}),
+            %Res=ldb:get(binary:encode_unsigned(Addr), {storage, IKey}),
+            Res=ldb:storage_get(binary:encode_unsigned(Addr), IKey),
             %io:format("=== Load key ~p:~p => ~s~n",[hex:encode(binary:encode_unsigned(Addr)),
             %                                        hex:encode(
             %                                          binary:encode_unsigned(
@@ -275,7 +276,7 @@ run(Address, Code, Data) ->
                      true ->
                        maps:get({Addr,code},Ex0,<<>>);
                      false ->
-                       io:format(".: Get LDB code for  ~p~n",[Addr]),
+                       io:format(".: Get LDB code for ~p~n",[binary:encode_unsigned(Addr)]),
                        GotCode=ldb:get(binary:encode_unsigned(Addr), code),
                        {ok, GotCode, maps:put({Addr,code},GotCode,Ex0)}
                    end
@@ -289,12 +290,12 @@ run(Address, Code, Data) ->
                       0
                   end
               end,
-  BeforeCall = fun(CallKind,CFrom,_Code,_Gas,
+  BeforeCall = fun(_CallKind,_CFrom,_Code,_Gas,
                    %#{address:=CAddr, value:=V}=CallArgs,
-                   #{address:=_CAddr, value:=V}=CallArgs,
+                   #{address:=_CAddr, value:=V}=_CallArgs,
                    %#{global_acc:=GAcc}=
                    Xtra) ->
-                   io:format("EVMCall from ~p ~p: ~p~n",[CFrom,CallKind,CallArgs]),
+                   %io:format("EVMCall from ~p ~p: ~p~n",[CFrom,CallKind,CallArgs]),
                    if V > 0 ->
                         %TX=msgpack:pack(#{
                         %                  "k"=>tx:encode_kind(2,generic),
@@ -471,10 +472,12 @@ local_deploy(Address, Code0,Arg, _Ed) ->
 store(#{log:=_Log}=Map) ->
   maps:fold(
     fun({Addr,state},Val,Acc) ->
-        ldb:put(binary:encode_unsigned(Addr),storage,
-                maps:to_list(Val)
-               ),
-        maps:put(hex:encode(binary:encode_unsigned(Addr)), [hex:encode(binary:encode_unsigned(U)) || U <- maps:keys(Val)], Acc);
+        %ldb:put(binary:encode_unsigned(Addr),storage,
+        %        maps:to_list(Val)
+        %       ),
+        ldb:storage_put(binary:encode_unsigned(Addr),maps:to_list(Val)),
+        %maps:put(hex:encode(binary:encode_unsigned(Addr)), [hex:encode(binary:encode_unsigned(U)) || U <- maps:keys(Val)], Acc);
+        Acc;
        (_,_,Acc) ->
         Acc
     end, #{}, Map).
