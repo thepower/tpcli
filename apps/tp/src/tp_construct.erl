@@ -1,8 +1,26 @@
 -module(tp_construct).
--export([construct/1, transform/3]).
+-export([construct/1, transform/3, address/1]).
 
 construct(JTX) ->
   maps:fold(fun transform/3, #{}, JTX).
+
+unwrap({ok,D,_}) ->
+  D.
+
+address(<<"0x",V/binary>>) ->
+  {ok,hex:decode(V),undefined};
+address(<<"@",Filename/binary>>) ->
+  case filelib:wildcard(binary_to_list(Filename)) of
+    [Filename1] ->
+      {ok,D} = file:consult(Filename1),
+      {ok, naddress:decode(proplists:get_value(address,D)), Filename1};
+    [] -> {error, not_found};
+    [_|_]=All ->
+      io:format("~s matches ~p~n",[Filename,All]),
+      {error, multiple_matches}
+  end;
+address(<<Address:20/binary>>) ->
+  {ok,naddress:decode(Address),undefined}.
 
 transform (<<"kind">>,V,A) ->
   if(is_integer(V)) ->
@@ -19,14 +37,10 @@ transform (<<"kind">>,V,A) ->
     V==<<"lstore">> ->
       maps:put(kind,lstore,A)
   end;
-transform (<<"from">>,<<"0x",V/binary>>,A) ->
-  maps:put(from,hex:decode(V),A);
 transform (<<"from">>,V,A) ->
-  maps:put(from,naddress:decode(V),A);
-transform (<<"to">>,<<"0x",V/binary>>,A) ->
-  maps:put(to,hex:decode(V),A);
+  maps:put(from,unwrap(address(V)),A);
 transform (<<"to">>,V,A) ->
-  maps:put(to,naddress:decode(V),A);
+  maps:put(to,unwrap(address(V)),A);
 transform (<<"seq">>,V,A) when is_integer(V) ->
   maps:put(seq,V,A);
 transform (<<"not_before">>,V,A) when is_integer(V) ->
@@ -136,7 +150,11 @@ transform (<<"payload">>,V,A) when is_list(V) ->
                         Purpose == <<"dstfee">> ->
                           dstfee;
                         Purpose == <<"srcfee">> ->
-                          srcfee
+                          srcfee;
+                        Purpose == <<"gashint">> ->
+                          gashint;
+                        Purpose == <<"srcfeehint">> ->
+                          srcfeehint
                      end
            }
       end, V),
@@ -146,14 +164,33 @@ transform (K,V,A) ->
   io:format("Unknown key ~s~n",[K]),
   maps:put(K,V,A).
 
+encode_abi_call(Args,Signature) ->
+  case contract_evm_abi:parse_signature(Signature) of
+    {ok,{{function,<<"undefined">>},
+         ABI, _}} ->
+      contract_evm_abi:encode_abi(Args,ABI);
+    {ok,{{function,_},ABI,_}=Sig} ->
+      Bin=contract_evm_abi:encode_abi(Args,ABI),
+      I=contract_evm_abi:sig32(contract_evm_abi:mk_sig(Sig)),
+      <<I:32/big,Bin/binary>>
+  end.
+
 decode_json_args(Args) ->
   lists:map(
     fun(<<"0x",B/binary>>) ->
         hex:decode(B);
        ([<<"!address">>,Args2]) ->
-        naddress:decode(Args2);
+        unwrap(address(Args2));
+       ([<<"!u256">>,Args2]) ->
+        << (
+        case Args2 of
+          <<"0x",X/binary>> ->
+            binary:decode_unsigned(hex:decode(X));
+          X when is_integer(X) ->
+            X
+        end):256/big>> ;
        ([<<"!abiencode">>,Function2,Args2]) ->
-        contract_evm_abi:encode_abi_call(decode_json_args(Args2),Function2);
+        encode_abi_call(decode_json_args(Args2),Function2);
        ([<<"!slice">>,Start,Len,Args2]) ->
         if(Len==0) ->
             <<_Skip:Start/binary,Use/binary>> = hd(decode_json_args([Args2])),

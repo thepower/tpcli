@@ -18,15 +18,33 @@ main(["showabi",Filename]) ->
     true ->
       lists:foreach(
         fun({{Kind,_Name},_In,_Out}=Signature) ->
-            io:format("~p ~s~n",[Kind,contract_evm_abi:mk_fullsig(Signature)])
+            io:format("~p ~s #~s~n",
+                      [Kind,
+                       contract_evm_abi:mk_fullsig(Signature),
+                       if Kind==constructor -> <<>>;
+                          true ->
+                            hex:encode(contract_evm_abi:sigb32(contract_evm_abi:mk_sig(Signature)))
+                       end
+                      ])
         end,
         File)
   end,
   ok;
 
+main(["tpas"]) ->
+  config_logger(),
+  io:format("~p~n",[application:ensure_all_started(tpas)]),
+  inet:i(),
+  io:format("Running tpas, hit ^C to terminate"),
+  receive Any -> Any end;
+
 main(["server"]) ->
   config_logger(),
-  tp_http_handler:start();
+  io:format("~p~n",[application:ensure_all_started(ranch)]),
+  tp_http_handler:start(),
+  inet:i(),
+  io:format("Running tp server, hit ^C to terminate"),
+  receive Any -> Any end;
 
 main(["info"|Args]) ->
   config_logger(),
@@ -85,8 +103,7 @@ options_main() ->
                                           proplists:get_value(host,Conf,"httpsi://localhost:49800/")},
     "tpnode's base address, use httpsi as protocol for ssl without cert verification"},
    {rawkey,    undefined,  "hexkey",    string, "keyfile"},
-   {keyfile,    $k,        "keyfile",    {string,
-                                          proplists:get_value(keyfile,Conf,"tpcli.key")},
+   {keyfile,    $k,        "keyfile",    undefined,
     "keyfile"},
    {{ed25519,true}, undefined, "ed25519", undefined, "use ed25519 for keys generation"},
    {kgen,       undefined, "genkey",      undefined, "Generate key"},
@@ -103,6 +120,7 @@ options_main() ->
    {example,    undefined, "example",     undefined, "save example JSON for construct"},
    {construct,  undefined, "construct",   string, "Construct tx from JSON <filename>"},
    {evmcall,    undefined, "evmcall",     string, "Call evm contract function, take args from <filename>"},
+   {revertdec, undefined, "revertdec", string, "Decode revert <hex string>"},
    {abifile,    undefined, "abi",     string, "Contract's ABI for result decoding"},
    {respfilename, undefined, "callresp",string, "Save evmcall resut to file <filename> "
     "(add .hex extension to save in hex format, .b64 in Base64, raw binary otherwise)"},
@@ -113,6 +131,7 @@ options_main() ->
    {sign,       undefined, "sign",        undefined, "Sign transaction"},
    {showtx,     undefined, "showtx",      undefined, "Display tx"},
    {submit,     undefined, "submit",      undefined, "Send transaction"},
+   {sub,     undefined, "sub",      undefined, "Like submit, but without waiting"},
    {ss,   undefined, "ss",  undefined, "Sign & submit"}
   ].
 
@@ -124,7 +143,7 @@ options_storage() ->
    {host,      $h,        "host",       {string,
                                           proplists:get_value(host,Conf,"httpsi://localhost:49800/")},
     "tpnode's base address, use httpsi as protocol for ssl without cert verification"},
-   {rawkey,    undefined,  "hexkey",    string, "keyfile"},
+   {rawkey,    undefined,  "hexkey",    string, "hex file"},
    {keyfile,   $k,        "keyfile",    {string,
                                           proplists:get_value(keyfile,Conf,"tpcli.key")},
     "keyfile"},

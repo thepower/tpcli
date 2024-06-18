@@ -1,9 +1,11 @@
 -module(tpapi2).
 
 -export([submit_tx/2,
+         submit_tx/3,
          parse_url/1,
          ping/1,
          reg/2,
+         reg/3,
          wait_tx/3,
          evm_encode/1,
          settings/1,
@@ -12,8 +14,15 @@
          get_seq/2,
          get_log/2,
          code/2,
+         state/3,
          match_cur/2,
-         httpget/2
+         httpget/2,
+         block/2,
+         logs/2,
+         evm_run/6,
+         nodestatus/1,
+         sort_peers/1,
+         get_lstore/3
         ]).
 -export([
          gas_price/2,
@@ -23,6 +32,136 @@
          connect/1,
          do_get/2
         ]).
+
+-export([search_tx_by_txid/2]).
+
+decode_txid(TxId) when is_binary(TxId) ->
+  case binary:split(TxId, <<"-">>) of
+    [N0, N1] ->
+      Bin = base58:decode(N0),
+      {ok, N1, decode_ints(Bin)};
+    _ ->
+      {error, invalid_tx_id}
+  end.
+
+decode_int(<<0:1/big,X:7/big,Rest/binary>>) ->
+  {X,Rest};
+decode_int(<<2:2/big,X:14/big,Rest/binary>>) ->
+  {X,Rest};
+decode_int(<<6:3/big,X:29/big,Rest/binary>>) ->
+  {X,Rest};
+decode_int(<<14:4/big,X:60/big,Rest/binary>>) ->
+  {X,Rest};
+decode_int(<<15:4/big,S:4/big,BX:S/binary,Rest/binary>>) ->
+  {binary:decode_unsigned(BX),Rest}.
+
+%% ------------------------------------------------------------------
+
+decode_ints(Bin) ->
+  case decode_int(Bin) of
+    {Int, <<>>} ->
+      [Int];
+    {Int, Rest} ->
+     [Int|decode_ints(Rest)]
+  end.
+
+search_tx_by_txid(Node, TxID) ->
+  {ok,_OriginNode,[ChainID,Height,Timestamp]} = decode_txid(TxID),
+  ConnPid = connect_or_reuse(Node),
+  {ok,Status}=nodestatus(ConnPid),
+  NodeChain=maps:get(<<"chain">>,maps:get(<<"blockchain">>,Status)),
+  if NodeChain =/= ChainID ->
+       fin_or_keep(Node,ConnPid),
+       {error,wrong_chain};
+     true ->
+       case do_get(ConnPid, "/api/logs_height/"++integer_to_list(Height)) of
+         {200, _Hdr, Body} ->
+           case jsx:decode(Body,[return_maps]) of
+             #{<<"ok">> := true,<<"log">>:=#{<<"blkid">>:=BlkID}} ->
+               R=try
+                   iterate_blocks(ConnPid, BlkID, TxID, Timestamp div 1000000)
+                 catch Ec:Ee ->
+                         {error, {Ec,Ee}}
+                 end,
+               fin_or_keep(Node,ConnPid),
+               R;
+             Any ->
+               fin_or_keep(Node,ConnPid),
+               {error, {unexpected_response,Any}}
+           end;
+         {Code,_,_Body} ->
+           fin_or_keep(Node,ConnPid),
+           {error, Code}
+       end
+  end.
+
+iterate_blocks(ConnPid, BlkID, TxID, TxTime) ->
+  logger:debug("Getting /api/blockinfo/~s",[BlkID]),
+  case do_get(ConnPid, "/api/blockinfo/"++binary_to_list(BlkID)) of
+    {200, _Hdr, Body} ->
+      case jsx:decode(Body,[return_maps]) of
+        #{<<"ok">> := true,
+          <<"block">>:=#{
+           <<"header">>:=#{
+            <<"roots">>:=#{
+             <<"mean_time">>:=HexBlockTime
+            }
+           },
+           <<"txs_ids">>:=Success,
+           <<"failed">>:=Failed
+          }=Blk} ->
+          case lists:member(TxID,Success) of
+            true ->
+              {found, {success, BlkID}};
+            false when is_map(Failed) ->
+              case maps:is_key(TxID,Failed) of
+                true ->
+                  {found, {failed, BlkID}};
+                false ->
+                  BlockTime=binary:decode_unsigned(hex:decode(HexBlockTime)),
+                  case maps:is_key(<<"child">>,Blk) of
+                    false ->
+                      not_found;
+                    true when BlockTime-TxTime>900000 ->
+                      not_found;
+                    true ->
+                      iterate_blocks(ConnPid, maps:get(<<"child">>,Blk), TxID, TxTime)
+                  end
+              end;
+            false ->
+              BlockTime=binary:decode_unsigned(hex:decode(HexBlockTime)),
+              case maps:is_key(<<"child">>,Blk) of
+                false ->
+                  not_found;
+                true when BlockTime-TxTime>900000 ->
+                  not_found;
+                true ->
+                  iterate_blocks(ConnPid, maps:get(<<"child">>,Blk), TxID, TxTime)
+              end
+          end;
+        Other ->
+          {error, {unexpected_response,Other}}
+      end;
+    {Code,_Hdr,_Body} ->
+      {error, Code}
+  end.
+
+nodestatus(Node) ->
+  ConnPid = connect_or_reuse(Node),
+  {Code, _Hdr, Body} = do_get(ConnPid,
+                              "/api/node/status"
+                             ),
+  fin_or_keep(Node,ConnPid),
+  if Code==200 ->
+       case jsx:decode(Body,[return_maps]) of
+         #{<<"ok">> := true,<<"status">>:=S} ->
+           {ok, S};
+         Any ->
+           {error, Any}
+       end;
+     true ->
+       {error, Code}
+  end.
 
 connect(Node) ->
   {Host, Port, Opts,_} = parse_url(Node),
@@ -34,8 +173,21 @@ connect(Node) ->
       throw(Other)
   end.
 
+connect_or_reuse(Node) when is_pid(Node) ->
+  Node;
+connect_or_reuse(Node) when is_binary(Node) orelse is_list(Node) ->
+  {ok, ConnPid} = connect(Node),
+  ConnPid.
+
+fin_or_keep(Node, Pid) ->
+  if Node == Pid ->
+       ok;
+     true ->
+       gun:close(Pid)
+  end.
+
 do_get(ConnPid, Endpoint) ->
-do_get1(ConnPid, Endpoint).
+  do_get1(ConnPid, Endpoint).
 
 do_get1(ConnPid, Endpoint) ->
   StreamRef = gun:get(ConnPid, Endpoint, []),
@@ -56,7 +208,7 @@ submit_tx(Node, Tx) ->
   submit_tx(Node, Tx, []).
 
 submit_tx(Node, Tx, Opts) ->
-  {ok, ConnPid} = connect(Node),
+  ConnPid=connect_or_reuse(Node),
   Post=fun(Endpoint, Bin) ->
            StreamRef = gun:post(ConnPid, Endpoint, [], Bin, #{}),
            {response, Fin, Code, _Headers} = gun:await(ConnPid, StreamRef),
@@ -69,39 +221,42 @@ submit_tx(Node, Tx, Opts) ->
            {Code, Body}
        end,
 
-  Res0=Post("/api/tx/new.bin",if is_map(Tx) ->
-                                         tx:pack(Tx);
-                                       is_binary(Tx) ->
-                                         Tx
-                                    end),
-  Res=case Res0 of
-        {200, JSON} ->
-          case jsx:decode(JSON, [return_maps]) of
-            #{<<"ok">>:=true,
-              <<"result">>:= <<"ok">>,
-              <<"txid">> := TxID
-             } ->
-              case lists:member(nowait,Opts) of
-                true ->
-                  gun:close(ConnPid),
-                  {ok,TxID};
-                false ->
-                  wait_tx(ConnPid, TxID, erlang:system_time(second)+30)
-              end;
-            _ ->
-              gun:close(ConnPid),
-              throw('bad_result')
+  Res0=Post("/api/tx/new.bin",
+            if is_map(Tx) ->
+                 tx:pack(Tx);
+               is_binary(Tx) ->
+                 Tx
+            end),
+  case Res0 of
+    {200, JSON} ->
+      case jsx:decode(JSON, [return_maps]) of
+        #{<<"ok">>:=true,
+          <<"result">>:= <<"ok">>,
+          <<"txid">> := TxID
+         } ->
+          case lists:member(nowait,Opts) of
+            true ->
+              fin_or_keep(Node, ConnPid),
+              {ok,TxID};
+            false ->
+              R=wait_tx(ConnPid, TxID, erlang:system_time(second)+30),
+              fin_or_keep(Node, ConnPid),
+              R
           end;
-        {500, JSON} ->
-          gun:close(ConnPid),
-          {error, jsx:decode(JSON, [return_maps])}
-      end,
-  gun:close(ConnPid),
-  Res.
+        _ ->
+          fin_or_keep(Node, ConnPid),
+          throw('bad_result')
+      end;
+    {Code1, JSON} when Code1 >= 400 ->
+      fin_or_keep(Node, ConnPid),
+      {error, jsx:decode(JSON, [return_maps])}
+  end.
 
-wait_tx(ConnPid, TxID, Timeout) ->
+wait_tx(ConnPid0, TxID, Timeout) ->
+  ConnPid=connect_or_reuse(ConnPid0),
   Now=erlang:system_time(second),
   if (Now>Timeout) ->
+       fin_or_keep(ConnPid0, ConnPid),
        {error, timeout};
      true ->
        Endpoint = "/api/tx/status/"++binary_to_list(TxID),
@@ -119,19 +274,56 @@ wait_tx(ConnPid, TxID, Timeout) ->
                timer:sleep(1000),
                wait_tx(ConnPid, TxID, Timeout);
              #{<<"res">>:= Result, <<"ok">> := true} ->
+               fin_or_keep(ConnPid0, ConnPid),
                {ok, Result#{<<"txid">> => TxID}};
              Other ->
+               fin_or_keep(ConnPid0, ConnPid),
                {error, Other}
            end;
          true ->
+           fin_or_keep(ConnPid0, ConnPid),
            {error, bad_res}
        end
   end.
 
+block(Node, Hash) ->
+  ConnPid = connect_or_reuse(Node),
+  {Code, _Hdr, Body} = do_get(ConnPid,"/api/binblock/"++binary_to_list(hex:encode(Hash))),
+  fin_or_keep(Node,ConnPid),
+  if Code==200 ->
+       {ok, block:unpack(Body)};
+     true ->
+       {error, Code}
+  end.
+
+logs(Node, Hash) ->
+  ConnPid = connect_or_reuse(Node),
+  {Code, _Hdr, Body} = do_get(ConnPid,"/api/logs/"++binary_to_list(hex:encode(Hash))++".mp"),
+  fin_or_keep(Node,ConnPid),
+  if Code==200 ->
+       {ok, #{<<"ok">> := true, <<"log">>:= Dec}} = msgpack:unpack(Body),
+       {ok, Dec};
+     true ->
+       {error, Code}
+  end.
+
 code(Node, Addr) ->
-  {ok, ConnPid} = connect(Node),
+  ConnPid = connect_or_reuse(Node),
   {Code, _Hdr, Body} = do_get(ConnPid,"/api/address/0x"++binary_to_list(hex:encode(Addr))++"/code"),
-  gun:close(ConnPid),
+  fin_or_keep(Node,ConnPid),
+  if Code==200 ->
+       {ok, Body};
+     true ->
+       {error, Code}
+  end.
+
+state(Node, Addr, Key) ->
+  ConnPid = connect_or_reuse(Node),
+  {Code, _Hdr, Body} = do_get(ConnPid,
+                              "/api/address/0x"++binary_to_list(hex:encode(Addr))++
+                              "/state/0x"++binary_to_list(hex:encode(Key))
+                             ),
+  fin_or_keep(Node,ConnPid),
   if Code==200 ->
        {ok, Body};
      true ->
@@ -139,10 +331,10 @@ code(Node, Addr) ->
   end.
 
 get_log(Node, Height) ->
-  {ok, ConnPid} = connect(Node),
+  ConnPid = connect_or_reuse(Node),
   %http://c1n2.thepower.io:1081/api/logs_height/2786
   {Code, _Hdr, Body} = do_get(ConnPid,"/api/logs_height/"++integer_to_list(Height)++".mp?bin=raw"),
-  gun:close(ConnPid),
+  fin_or_keep(Node,ConnPid),
   if Code==200 ->
        {ok,M}=msgpack:unpack(Body),
        case M of
@@ -161,10 +353,56 @@ get_log(Node, Height) ->
   end.
 
 
+is_printable(<<>>) ->
+  true;
+is_printable(<<B0,Bin/binary>>) when B0>=32 andalso B0<127 ->
+  is_printable(Bin);
+is_printable(_) ->
+  false.
+
+get_lstore(Node, Addr, Path) ->
+  ConnPid = connect_or_reuse(Node),
+  TPath=lists:foldr(fun(Component, Acc) when is_binary(Component) ->
+                        case is_printable(Component) of
+                          false ->
+                            ["/0x",hex:encode(Component)|Acc];
+                          true ->
+                            ["/",Component|Acc]
+                        end;
+                       (Component, Acc) ->
+                        ["/",Component|Acc]
+                    end,
+                    [],
+                    Path),
+  QS="/api/address/0x"++binary_to_list(hex:encode(Addr))++
+     "/lstore"++binary_to_list(list_to_binary(TPath))++".mp?bin=raw",
+     io:format("QS ~p~n",[QS]),
+  {Code, _Hdr, Body} = do_get(ConnPid,QS),
+  fin_or_keep(Node,ConnPid),
+  if Code==200 ->
+       %temporary fix for tpnode < v0.16
+       CT=hd(lists:reverse(
+               lists:filter(
+                 fun({K,_}) ->
+                     K==<<"content-type">>
+                 end,_Hdr)
+              )
+            ),
+       case CT of
+         {<<"content-type">>,<<"application/msgpack">>} ->
+           {ok, M}=msgpack:unpack(Body),
+           {ok, M};
+         _ ->
+           {ok, Body}
+       end;
+     true ->
+       {error, Code}
+  end.
+
 get_seq(Node, Addr) ->
-  {ok, ConnPid} = connect(Node),
+  ConnPid = connect_or_reuse(Node),
   {Code, _Hdr, Body} = do_get(ConnPid,"/api/address/0x"++binary_to_list(hex:encode(Addr))++".mp?bin=raw"),
-  gun:close(ConnPid),
+  fin_or_keep(Node,ConnPid),
   if Code==200 ->
        {ok,M}=msgpack:unpack(Body),
        case M of
@@ -181,9 +419,9 @@ get_seq(Node, Addr) ->
   end.
 
 httpget(Node, Path) ->
-  {ok, ConnPid} = connect(Node),
+  ConnPid = connect_or_reuse(Node),
   {Code, Header, Body} = do_get1(ConnPid,Path),
-  gun:close(ConnPid),
+  fin_or_keep(Node,ConnPid),
   if Code==200 ->
        case proplists:get_value(<<"content-type">>, Header, <<"application/octet-stream">>) of
          <<"application/json">> ->
@@ -199,9 +437,9 @@ httpget(Node, Path) ->
   end.
 
 ledger(Node, Addr) ->
-  {ok, ConnPid} = connect(Node),
+  ConnPid = connect_or_reuse(Node),
   {Code, _Hdr, Body} = do_get(ConnPid,"/api/address/0x"++binary_to_list(hex:encode(Addr))++".mp?bin=raw"),
-  gun:close(ConnPid),
+  fin_or_keep(Node,ConnPid),
   if Code==200 ->
        {ok,M}=msgpack:unpack(Body),
        case M of
@@ -220,9 +458,9 @@ settings(Node) ->
   settings(Node,[]).
 
 settings(Node, Path) ->
-  {ok, ConnPid} = connect(Node),
+  ConnPid = connect_or_reuse(Node),
   {Code, _Hdr, Body} = do_get(ConnPid,"/api/settings.mp"),
-  gun:close(ConnPid),
+  fin_or_keep(Node, ConnPid),
   if Code==200 ->
        {ok,M}=msgpack:unpack(Body),
        case M of
@@ -245,9 +483,9 @@ take_settings(Paths,Sets) when is_map(Paths) ->
     end, Paths).
 
 ping(Node) ->
-  {ok, ConnPid} = connect(Node),
+  ConnPid = connect_or_reuse(Node),
   {Code, _Hdr, Body} = do_get(ConnPid,"/api/status"),
-  gun:close(ConnPid),
+  fin_or_keep(Node,ConnPid),
   if Code==200 ->
        Res=jsx:decode(Body, [return_maps]),
        case maps:get(<<"ok">>, Res, false) of
@@ -259,7 +497,10 @@ ping(Node) ->
   end.
 
 reg(Node, Priv) ->
-  Pub=tpecdsa:calc_pub(Priv,true),
+  reg(Node, Priv, []).
+
+reg(Node, Priv, Opts) ->
+  Pub=tpecdsa:calc_pub(Priv),
   Tx=tx:sign(
        tx:construct_tx(
          #{kind=>register,
@@ -267,7 +508,109 @@ reg(Node, Priv) ->
            ver=>2,
            keys=>[Pub]
           }),Priv),
-  submit_tx(Node,Tx).
+  submit_tx(Node,Tx,Opts).
+
+evm_run(Node, Address, Function, Params, ABI, Gas) ->
+  case erlang:function_exported(eevm,eval,3) of
+    false ->
+      throw('no_eevm');
+    true -> ok
+  end,
+  ConnPid = connect_or_reuse(Node),
+
+  case do_get1(ConnPid, <<"/api/address/0x",(hex:encode(Address))/binary,"/code">>) of
+    {200, _Hdr, Bytecode} ->
+      %Bytecode = eevm_asm:assemble(<<"push 0 \nsload \npush 0 \nmstore \ncalldatasize \npush 0 \npush 32 \ncalldatacopy \npush 24 \ncalldatasize \npush 32 \nadd \nsub \npush 24\nreturn">>),
+      SLoad=fun(Addr, IKey, _Ex0) ->
+                case do_get1(ConnPid, <<"/api/address/0x",(hex:encode(binary:encode_unsigned(Addr)))/binary,
+                           "/state/0x",(hex:encode(binary:encode_unsigned(IKey)))/binary>>) of
+                  {200,_,St1} ->
+                    Res=binary:decode_unsigned(St1),
+                    logger:debug("=== Load key ~p:~p => ~p",[Addr,IKey,hex:encode(St1)]),
+                    Res;
+                  Other ->
+                    logger:notice("address ~p quering storage key ~p error: ~p",[Addr,IKey,Other]),
+                    throw({bad_return,Other})
+                end
+            end,
+      IFun = fun(B) -> {ok,E}=ksha3:hash(256, B), <<X:32/big,_/binary>> = E,X end(Function),
+      {AbiIn, AbiOut} = if is_list(ABI) ->
+                             case tp_abi:find_function(Function,ABI) of
+                               [{{function,_},Input,Output}] ->
+                                 {Input,Output};
+                               _ ->
+                                 {undefined,undefined}
+                             end;
+                           ABI == undefined ->
+                             case tp_abi:parse_signature(Function) of
+                               {ok, {{function, _}, Input, Output}} ->
+                                 {Input, Output};
+                               _ ->
+                                 {undefined, undefined}
+                             end;
+                           true ->
+                             {undefined,undefined}
+                        end,
+      State0 = #{ sload=>SLoad,
+                  gas=>Gas,
+                  data=>#{
+                          address=>binary:decode_unsigned(Address),
+                          caller => 1024,
+                          origin => 1024
+                         },
+                  cd => if is_list(AbiIn) ->
+                             ABin=tp_abi:encode_abi(Params,AbiIn),
+                             <<IFun:32/big,ABin/binary>>;
+                           is_list(Params) ->
+                             PBin=tp_abi:encode_simple(Params),
+                             << IFun:32/big, PBin/binary>>
+                        end
+                },
+      Res=try
+            Rr=eevm:eval(Bytecode,#{},State0),
+            Rr
+          catch Ec:Ee:Stack ->
+                  {error, iolist_to_binary(io_lib:format("~p:~p@~p",[Ec,Ee,hd(Stack)]))}
+          end,
+      FmtStack=fun(St) ->
+                   [<<"0x",(hex:encode(binary:encode_unsigned(X)))/binary>> || X<-St]
+               end,
+      fin_or_keep(Node, ConnPid),
+      case Res of
+        {done, {return,RetVal}, #{stack:=St}} ->
+          Decode=case AbiOut of
+                   undefined -> RetVal;
+                   _ ->
+                     case tp_abi:decode_abi(RetVal,AbiOut) of
+                       R when is_list(R) ->
+                         {decoded,R};
+                       _ ->
+                         RetVal
+                     end
+                 end,
+          {return, Decode, FmtStack(St)};
+        {done, 'stop',  #{stack:=St}} ->
+          {stop, undefined, FmtStack(St)};
+        {done, 'eof', #{stack:=St}} ->
+          {eof, undefined, FmtStack(St)};
+        {done, 'invalid',  #{stack:=St}} ->
+          {error, invalid, FmtStack(St)};
+        {done, {revert, Data},  #{stack:=St}} ->
+          {revert, Data, FmtStack(St)};
+        {error, Desc} ->
+          {error, Desc, []};
+        {error, nogas, #{stack:=St}} ->
+          {error, nogas, FmtStack(St)};
+        {error, {jump_to,_}, #{stack:=St}} ->
+          {error, bad_jump, FmtStack(St)};
+        {error, {bad_instruction,_}, #{stack:=St}} ->
+          {error, bad_instruction, FmtStack(St)}
+      end;
+    {404, _, _} ->
+      {error, code_not_found}
+  end.
+
+
 
 % ======
 
@@ -330,7 +673,6 @@ parse_url(Node) when is_list(Node) ->
    Opts,
    #{path=>Path}
   }.
-
 
 %evm_encode_test_() ->
 %  evm_encode([123,
@@ -422,3 +764,17 @@ match_cur(FeePrice, Amounts) ->
         FeePrice)
   end.
 
+sort_peers(List) ->
+  Weight=fun(Url) ->
+             #{scheme:=HTTPs,host:=Hostname}=uri_string:parse(Url),
+             Rank=(if HTTPs=="https" -> 1; true -> 0.8 end) *
+              (case inet:parse_address(Hostname) of
+                 {ok,_} when HTTPs=="https" -> 0.1;
+                 {error,_} when HTTPs=="https"-> 1;
+                 {ok,_} -> 1;
+                 {error,_} -> 0.9
+               end
+              )*0.8+(rand:uniform()*0.2),
+              Rank
+         end,
+  [ E || {E,_} <- lists:reverse(lists:keysort(2,[ {N, Weight(N)} || N <- List ])) ].

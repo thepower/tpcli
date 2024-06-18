@@ -92,7 +92,7 @@ get(Address, {storage, Key}) ->
     {ok, [PL]} ->
       V=proplists:get_value(Key,PL,0),
       %io:format("~s:~p = ~p~n",[BA,hex:encode(binary:encode_unsigned(Key)),V]),
-      T1=erlang:system_time(),
+      %T1=erlang:system_time(),
       %io:format("time ~wns~n",[T1-T]),
       V;
     {error, _Er} ->
@@ -104,7 +104,8 @@ get(Address, abi) ->
   Filename= << "ldb/",BA/binary,"_abi.json" >>,
   try
     contract_evm_abi:parse_abifile(Filename)
-  catch _Ec:_Ee ->
+  catch _Ec:_Ee:S ->
+          logger:error("err ~p:~p @ ~p",[_Ec,_Ee,S]),
           []
   end;
 
@@ -153,7 +154,7 @@ storage_put(Address, KVs) ->
          fun({K,V}) ->
              {encode_kv(K),encode_kv(V)}
          end, KVs),
-  R1=read_and_replace(FD,KVBs),
+  {R1,CA}=read_and_replace(FD,KVBs,[]),
   file:position(FD,eof),
   lists:foreach(
     fun({K,V}) ->
@@ -161,26 +162,29 @@ storage_put(Address, KVs) ->
     end,
     R1),
   file:close(FD),
-  R1.
+  lists:foldl(
+    fun({K1,_},A) ->
+        [hex:decode(K1)|A]
+    end, CA, R1).
 
-read_and_replace(FD, KVs) ->
+read_and_replace(FD, KVs, CA) ->
   case file:read(FD,130) of
     {ok,<<K:64/binary," ",V:64/binary,"\n">>} ->
       case lists:keyfind(K,1,KVs) of
         {K,Val1} ->
           if(Val1==V) ->
-              read_and_replace(FD,KVs--[{K,Val1}]);
+              read_and_replace(FD,KVs--[{K,Val1}],CA);
             true ->
               {ok,P0}=file:position(FD,cur),
               {ok,_}=file:position(FD,{cur,-65}),
               ok=file:write(FD,Val1),
               {ok,_}=file:position(FD,P0),
-              read_and_replace(FD,KVs--[{K,Val1}])
+              read_and_replace(FD,KVs--[{K,Val1}],[hex:decode(K)|CA])
           end;
         false ->
-          read_and_replace(FD,KVs)
+          read_and_replace(FD,KVs,CA)
       end;
     eof ->
-      KVs
+      {KVs,CA}
   end.
 

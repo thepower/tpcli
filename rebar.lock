@@ -9,6 +9,10 @@
   {git,"https://github.com/thepower/eevm.git",
        {ref,"eaa04123d42bb4675676f8052874ada75fa37a2b"}},
   0},
+ {<<"eevm_abi">>,
+  {git,"https://github.com/cleverfox/eevm_abi.git",
+       {ref,"d022998492e8c32841f8f37dd7c50a65e67577d3"}},
+  0},
  {<<"esha3">>,
   {git,"https://github.com/cleverfox/esha3.git",
        {ref,"12418aa70ffee1ea77aeda5277a2a426d32aa90c"}},
@@ -22,7 +26,7 @@
  {<<"hex2bin">>,{pkg,<<"hex2bin">>,<<"1.0.0">>},2},
  {<<"jsx">>,
   {git,"https://github.com/cleverfox/jsx.git",
-       {ref,"362f0b4aa9d982a33dcb3e7d8ced80ec755b64a1"}},
+       {ref,"24033b616a72358e464bf3866262b03ade91b000"}},
   1},
  {<<"ksha3">>,
   {git,"https://github.com/onyxrev/ksha3",
@@ -35,7 +39,7 @@
  {<<"ranch">>,{pkg,<<"ranch">>,<<"1.8.0">>},1},
  {<<"tplib">>,
   {git,"https://github.com/thepower/tplib_erlang.git",
-       {ref,"bf280c5b0cf5fd9e9d96c6d60459c990358b4857"}},
+       {ref,"aef6a01febada2461ae54815398b9d24cbd2adc4"}},
   0}]}.
 [
 {pkg_hash,[

@@ -23,6 +23,7 @@ main_run(Options, NonOpt) ->
                  ({address,_}) -> true;
                  ({wimp,_}) -> true;
                  ({logs,_}) -> true;
+                 ({revertdec,_}) -> true;
                  ({getcode,_}) -> true;
                  ({gasprice,_}) -> true;
                  ({mkmanifest,_}) -> true;
@@ -81,7 +82,7 @@ run([example|Rest], Opt) ->
   EvmCall="H4sIAAAAAAAAA6vmUlBQSkxJKUotLlayUnJ0NDSAADNzQwMLCzNLC2MlHZCatNK85JLM/DwlKwWl9NSSgKL8ssyU1CKN0sy8EiNTM02IqsSidKAxCtFGsVy1XACpUKM9XAAAAA==",
   LStore="H4sIAAAAAAAAA63PQQ+CIBwF8Lufgv3PHACbWTdvnerYoblmQdOFYsCs5vzugZSnNi9yeu/Bfht9hBB0QsMWMezzvWq4KyCNVVrAuN20qv2WZZSEk6wpSdNkk8bhhfXX+8MxNCMek9cWb6kKT57y72CvpTB+cBWhHlqfQYpOSAo4BOZCKaRUkOORd6gFFzsXd/4Co6fSksOAZ5hL1VAWr/5B5EUoYSSeR2Rl7CT4ci44/zGVFTVdwGALGO4vjsijIfoA/W50ENsBAAA=",
   Save=fun(Bin,Filename) ->
-           file:write_file(Filename,
+           ok=file:write_file(Filename,
                            zlib:gunzip(
                            base64:decode(Bin)
                             ))
@@ -126,45 +127,88 @@ run([{getcode,Addr}|Rest], Opt) ->
   io:format("~s~n",[hex:encode(R)]),
   run(Rest, Opt);
 
+run([{revertdec,Data}|Rest], Opt) ->
+  R=eevm_abi_evsig:decode_auto(hex:decode(Data)),
+  io:format("~p~n",[R]),
+  run(Rest, Opt);
+
 run([{logs,Height}|Rest], Opt) ->
   {ok,R}=tpapi2:get_log(proplists:get_value(host,Opt),list_to_integer(Height)),
-  L=lists:foldl(
-      fun([TxID,<<"evm">>, From, To, Data, [Signature|Topics]],A) ->
+  T=fun(List) ->
+        lists:map(
+          fun(Topic) when is_binary(Topic) ->
+              hex:encodex(Topic);
+             (Any) ->
+              Any
+          end,
+          List)
+    end,
+  L=lists:foldr(
+      fun([_TxID, <<"evm">>,<<"revert">>, <<>>],A) ->
+          A;
+         ([_TxID, <<"evm">>,<<"revert">>, <<Sig:4/binary,Data/binary>>],A) ->
+          A;
+          %[#{tx => TxID,
+          %   revert=>true,
+          %   from=>unknown,
+          %   to=>unknown,
+          %   sig => hex:encode(Sig),
+          %   data => hex:encode(Data)}|A];
+         ([TxID, <<"evm:revert">>, From, To, <<Sig:4/binary, Data/binary>>], A) ->
+          [#{tx => TxID,
+             revert=>true,
+             from=>hex:encode(From),
+             to=>hex:encode(To),
+             sig => hex:encode(Sig),
+             data => hex:encode(Data)}|A];
+          ([TxID,<<"evm">>, From, To, Data, [Signature|Topics]],A) ->
           case getsig(Signature) of
             not_found ->
               [#{tx=>TxID,
-                 from=>naddress:encode(From),
-                 to=>naddress:encode(To),
+                 from=>hex:encode(From),
+                 to=>hex:encode(To),
                  data=>hex:encode(Data),
                  sig=>hex:encode(Signature),
-                 tpoics=>Topics
+                 topics=>T(Topics)
                 }|A];
             {_, ABIIn, _} = ABI ->
               [#{tx=>TxID,
-                 from=>naddress:encode(From),
-                 to=>naddress:encode(To),
+                 from=>hex:encode(From),
+                 to=>hex:encode(To),
                  data=>hex:encode(Data),
                  decode => try
-                             contract_evm_abi:decode_abi(Data, ABIIn, Topics)
+                             contract_evm_abi:decode_abi(Data, ABIIn, Topics,
+                                                         fun(_,address,V) ->
+                                                             hex:encodex(V);
+                                                            (_,_,V) ->
+                                                             V
+                                                         end
+                                                        )
                            catch Ec:Ee ->
                                    {error, {Ec,Ee}}
                            end,
                  sig=>contract_evm_abi:mk_sig(ABI),
-                 tpoics=>Topics
+                 topics=>T(Topics)
                 }|A];
             [Found|_] = _All ->
               {ok,{_, ABI, _}}=contract_evm_abi:parse_signature(Found),
               [#{tx=>TxID,
-                 from=>naddress:encode(From),
-                 to=>naddress:encode(To),
+                 from=>hex:encode(From),
+                 to=>hex:encode(To),
                  data=>hex:encode(Data),
                  decode => try
-                             contract_evm_abi:decode_abi(Data, ABI, Topics)
+                             contract_evm_abi:decode_abi(Data, ABI, Topics,
+                                                         fun(_,address,V) ->
+                                                             hex:encodex(V);
+                                                            (_,_,V) ->
+                                                             V
+                                                         end
+)
                            catch Ec:Ee ->
                                    {error, {Ec,Ee}}
                            end,
                  sig=>Found,
-                 tpoics=>Topics
+                 topics=>T(Topics)
                 }|A]
           end
       end, [], R),
@@ -199,8 +243,11 @@ run([sets|Rest], Opt) ->
 run([sign|Rest], Opt) ->
   run(Rest, sign(Opt));
 
+run([sub|Rest], Opt) ->
+  run(Rest, submit(Opt,[nowait]));
+
 run([submit|Rest], Opt) ->
-  run(Rest, submit(Opt));
+  run(Rest, submit(Opt,[]));
 
 run([ss|Rest], Opt) ->
   run(Rest, tpcli_main:submit(tpcli_main:sign(Opt)));
@@ -236,10 +283,33 @@ run([showtx|Rest], Opt) ->
   end,
   run(Rest, Opt);
 
-run([{construct,Filename}|Rest], Opt) ->
+run([{construct,Filename}|Rest], Opt0) ->
   {ok,Bin} = file:read_file(Filename),
   JTX=jsx:decode(Bin,[return_maps]),
-  JSON=case JTX of
+  JT=fun() ->
+         case JTX of
+            #{<<"from">>:=SA} ->
+              case tp_construct:address(SA) of
+                {ok, A, KeyFilename} ->
+                  {[{address,naddress:encode(A)},{keyfile,KeyFilename}|Opt0],
+                   JTX#{<<"from">>=>naddress:encode(A)}};
+                {ok, A, undefined} ->
+                  {Opt0, JTX};
+                _Other ->
+                  {Opt0,JTX}
+              end;
+            _ -> {Opt0,JTX}
+          end
+     end,
+  {Opt,JTX1}=case lists:keyfind(keyfile,1,Opt0) of
+               {keyfile,"tpcli.key"} ->
+                 JT();
+               false ->
+                 JT();
+               _ ->
+                 {Opt0,JTX}
+             end,
+  JSON=case JTX1 of
          #{ <<"seq">>:= <<"auto">> } ->
            Node=proplists:get_value(host,Opt),
            File=proplists:get_value(keyfile, Opt),
@@ -262,6 +332,7 @@ run([{construct,Filename}|Rest], Opt) ->
          _ ->
            tp_construct:construct(JTX)
        end,
+
   Tx=tx:construct_tx(JSON),
 
   run(Rest, [{tx,Tx}|Opt]);
@@ -361,11 +432,11 @@ run([{evmcall,Filename}|Rest], Opt) ->
             RespFile ->
               case filename:extension(RespFile) of
                 ".hex" ->
-                  file:write_file(RespFile,hex:encode(Bin));
+                  ok=file:write_file(RespFile,hex:encode(Bin));
                 ".b64" ->
-                  file:write_file(RespFile,base64:encode(Bin));
+                  ok=file:write_file(RespFile,base64:encode(Bin));
                 _ ->
-                  file:write_file(RespFile,Bin)
+                  ok=file:write_file(RespFile,Bin)
               end
           end;
         Other ->
@@ -410,7 +481,7 @@ run([{mkmanifest,Dirname}|Rest], Opt) ->
   io:format("Manifest writtent to manifest.json~n"),
   io:format("Manifest hash: ~s~n",[hex:encode(Hash)]),
   io:format("Total files size: ~w~n",[Size]),
-  file:write_file("manifest.json",JSON),
+  ok=file:write_file("manifest.json",JSON),
   run(Rest,Opt);
 
 run([Other|Rest], Opt) ->
@@ -426,7 +497,7 @@ readkey(KeyFile) ->
   end.
 
 writefile(Filename, Proplist) ->
-  file:write_file(
+  ok=file:write_file(
     Filename,
   [
    io_lib:format("~p.~n",[E])
@@ -450,13 +521,16 @@ sign(Opt) ->
         false ->
           ok;
         true ->
-          TxA=maps:get(from,Tx),
-          MyA=naddress:decode(proplists:get_value(address, Prev)),
-          if(TxA =/= MyA) ->
-              io:format("Registered address mismatch tx's from ~s =/= ~s~n",
-                        [naddress:encode(MyA),naddress:encode(TxA)]);
-            true ->
-              ok
+          case maps:get(from,Tx,undefined) of
+            undefined -> ok;
+            TxA ->
+              MyA=naddress:decode(proplists:get_value(address, Prev)),
+              if(TxA =/= MyA) ->
+                  io:format("Registered address mismatch tx's from ~s =/= ~s~n",
+                            [naddress:encode(MyA),naddress:encode(TxA)]);
+                true ->
+                  ok
+              end
           end
       end,
       case proplists:get_value(privkey, Prev) of
@@ -474,15 +548,19 @@ sign(Opt) ->
   end.
 
 submit(Opt) ->
+  submit(Opt, []).
+submit(Opt, Extra) ->
   Tx=proplists:get_value(tx,Opt),
   if(Tx==undefined) ->
       throw('no_tx_for_submit');
     true ->
       ok
   end,
+  io:format("tx to send ~s~n",[base64:encode(tx:pack(Tx))]),
   Res = tpapi2:submit_tx(
           proplists:get_value(host,Opt),
-          tx:pack(Tx)
+          tx:pack(Tx),
+          Extra
          ),
   case Res of
     {ok, #{<<"ok">> := true,
@@ -510,7 +588,7 @@ submit(Opt) ->
     fun({submitcb, F}) when is_function(F) ->
         try
           F(Res)
-        catch _:_ -> ok 
+        catch _:_ -> ok
         end;
        (_) ->
         ok
@@ -615,14 +693,15 @@ estimate(Opt) ->
       Opt
   end.
 
-getsig(<<0,221,242,82,173,27,226,200,155,105,194,176,104,252,55,141,170,149,43,167,241,
+%%% TODO: port back from tpcli in tp_evsig !!!
+getsig(<<221,242,82,173,27,226,200,155,105,194,176,104,252,55,141,170,149,43,167,241,
   99,196,161,22,40,245,90,77,245,35,179,239>>) ->
   {{function,<<"Transfer">>},
    [{<<"from">>,{indexed,address}},
     {<<"to">>,{indexed,address}},
     {<<"value">>,uint256}], undefined};
 
-getsig(<<0,140,91,225,229,235,236,125,91,209,79,113,66,125,30,132,243,221,3,20,192,247,
+getsig(<<140,91,225,229,235,236,125,91,209,79,113,66,125,30,132,243,221,3,20,192,247,
   178,41,30,91,32,10,200,199,195,185,37>>) ->
   {{function,<<"Approval">>},
    [{<<"from">>,{indexed,address}},

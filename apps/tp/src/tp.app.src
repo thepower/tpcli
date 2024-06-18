@@ -7,6 +7,7 @@
     gun,
     tplib,
     eevm,
+    eevm_abi,
     tpapi2,
     esha3,
     getopt,

@@ -286,7 +286,7 @@ run([{mkmanifest,Dirname}|Rest], Opt) ->
   io:format("Manifest writtent to ~s~n",[FManifest]),
   io:format("Manifest hash: ~s~n",[hex:encode(Hash)]),
   io:format("Total files size: ~w~n",[Size]),
-  file:write_file(FManifest,JSON),
+  ok=file:write_file(FManifest,JSON),
   run(Rest,Opt);
 
 run([Other|Rest], Opt) ->

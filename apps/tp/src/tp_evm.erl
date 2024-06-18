@@ -232,7 +232,8 @@ run(Address, Code, Data) ->
        (chainid, #{stack:=Stack}=BIState) ->
          BIState#{stack=>[16#c0de00000000|Stack]};
        (number,#{stack:=BIStack}=BIState) ->
-         BIState#{stack=>[10+1|BIStack]};
+         MT=os:system_time(second) div 2,
+         BIState#{stack=>[MT|BIStack]};
        (timestamp,#{stack:=BIStack}=BIState) ->
          MT=os:system_time(millisecond),
          BIState#{stack=>[MT|BIStack]};
@@ -276,7 +277,8 @@ run(Address, Code, Data) ->
                      true ->
                        maps:get({Addr,code},Ex0,<<>>);
                      false ->
-                       io:format(".: Get LDB code for ~p~n",[binary:encode_unsigned(Addr)]),
+                       io:format(".: Get LDB code for ~s~n",
+                                 [hex:encode(binary:encode_unsigned(Addr))]),
                        GotCode=ldb:get(binary:encode_unsigned(Addr), code),
                        {ok, GotCode, maps:put({Addr,code},GotCode,Ex0)}
                    end
@@ -475,9 +477,9 @@ store(#{log:=_Log}=Map) ->
         %ldb:put(binary:encode_unsigned(Addr),storage,
         %        maps:to_list(Val)
         %       ),
-        ldb:storage_put(binary:encode_unsigned(Addr),maps:to_list(Val)),
+        Aff=ldb:storage_put(binary:encode_unsigned(Addr),maps:to_list(Val)),
+        maps:put(Addr, Aff,Acc);
         %maps:put(hex:encode(binary:encode_unsigned(Addr)), [hex:encode(binary:encode_unsigned(U)) || U <- maps:keys(Val)], Acc);
-        Acc;
        (_,_,Acc) ->
         Acc
     end, #{}, Map).
@@ -634,6 +636,8 @@ decode_res(_,address,V) ->
 decode_res(_,bytes,V) ->
   <<"0x",(hex:encode(V))/binary>>;
 decode_res(_,bytes32,V) ->
+  <<"0x",(hex:encode(V))/binary>>;
+decode_res(_,{bytes,32},V) ->
   <<"0x",(hex:encode(V))/binary>>;
 decode_res(_,bytes4,V) ->
   <<"0x",(hex:encode(V))/binary>>;

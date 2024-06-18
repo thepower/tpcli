@@ -173,7 +173,7 @@ run([fetch_genesis|Rest], Opt) ->
    }=Block=block:unpack(R),
   io:format("Found chain ~w genesis hash 0x~s~n",[CN,hex:encode(Hash)]),
   io:format("Genesis b64 hash ~s~n",[base64:encode(Hash)]),
-  file:write_file(
+  ok=file:write_file(
     ["genesis_",integer_to_list(CN),".txt"],
     io_lib:format("~p.~n",[Block])),
   run(Rest, Opt);
